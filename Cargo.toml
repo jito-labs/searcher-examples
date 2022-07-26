@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "backrun",
+    "jito_protos",
+    "searcher_service_client",
+]

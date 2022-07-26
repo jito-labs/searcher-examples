@@ -1,0 +1,17 @@
+[package]
+name = "jito-protos"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+bincode = "1.3.3"
+bytes = "1.1.0"
+prost = "0.8.0"
+prost-types = "0.8.0"
+solana-perf = "=1.11.2"
+solana-sdk = "=1.11.2"
+tonic = "0.5.2"
+
+[build-dependencies]
+tonic-build = "0.5.2"
