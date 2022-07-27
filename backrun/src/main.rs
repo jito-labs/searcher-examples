@@ -128,8 +128,10 @@ fn main() {
             tokio::select! {
                 maybe_pending_tx_notification = pending_tx_stream.message() => {
                     let transactions_of_interest = get_transactions_of_interest(maybe_pending_tx_notification, &pubkey, &valid_blockhashes).expect("gets transactions");
-                    let new_backruns = backrun_transaction(transactions_of_interest, &mut searcher_client, &valid_blockhashes, &kp).await.expect("sends bundles");
-                    backruns.extend(new_backruns);
+                    if !transactions_of_interest.is_empty() {
+                        let new_backruns = backrun_transaction(transactions_of_interest, &mut searcher_client, &valid_blockhashes, &kp).await.expect("sends bundles");
+                        backruns.extend(new_backruns);
+                    }
                 }
                 maybe_block = block_notifications.next() => {
                     let backrun_stats = update_block_stats(maybe_block, &mut valid_blockhashes, &mut backruns);
