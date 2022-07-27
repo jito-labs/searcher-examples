@@ -1,5 +1,5 @@
+use std::collections::HashSet;
 use std::{
-    cmp::max,
     collections::VecDeque,
     path::Path,
     str::FromStr,
@@ -9,6 +9,8 @@ use std::{
 
 use clap::Parser;
 use futures_util::StreamExt;
+use jito_protos::searcher::ConnectedLeadersRequest;
+use jito_protos::searcher::NextScheduledLeaderRequest;
 use jito_protos::{
     bundle::Bundle,
     convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet},
@@ -23,7 +25,7 @@ use prost_types::Timestamp;
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
     rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
-    rpc_response::{Response, RpcBlockUpdate, SlotInfo},
+    rpc_response::{Response, RpcBlockUpdate},
 };
 use solana_sdk::{
     clock::Slot,
@@ -36,6 +38,7 @@ use solana_sdk::{
 use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use spl_memo::build_memo;
 use tokio::runtime::Builder;
+use tokio::time::interval;
 use tonic::{transport::Channel, Status};
 
 #[derive(Parser, Debug)]
@@ -105,9 +108,6 @@ fn main() {
                 show_rewards: Some(false),
                 max_supported_transaction_version: Some(0),
             })).await.expect("block subscribing");
-        let (mut slot_notifications, _slot_unsubscribe) = pubsub_client.slot_subscribe().await.expect("slot subscribe");
-        info!("slot and block subscribed");
-
         let response = searcher_client
             .subscribe_pending_transactions(PendingTxSubscriptionRequest {
                 accounts: vec![pubkey.to_string()],
@@ -117,9 +117,11 @@ fn main() {
         info!("subscribed to pending transactions");
 
         let mut valid_blockhashes: VecDeque<Hash> = VecDeque::new();
-        let mut slot = Slot::default();
+
+        let mut connected_leader_slots: HashSet<Slot> = HashSet::new();
 
         let mut backruns = Vec::new();
+        let mut tick = interval(Duration::from_secs(5));
 
         let mut pending_tx_stream = response.into_inner();
         loop {
@@ -131,12 +133,20 @@ fn main() {
                 }
                 maybe_block = block_notifications.next() => {
                     let backrun_stats = update_block_stats(maybe_block, &mut valid_blockhashes, &mut backruns);
-                    if backrun_stats.num_pending > 0 {
+                    if connected_leader_slots.contains(&backrun_stats.slot) {
                         info!("backrun_stats: {:?}", backrun_stats);
                     }
                 }
-                maybe_slot = slot_notifications.next() => {
-                    update_slot(maybe_slot, &mut slot);
+                _ = tick.tick() => {
+                    let next_leader_info = searcher_client.get_next_scheduled_leader(NextScheduledLeaderRequest{}).await.expect("gets next slot").into_inner();
+                    let slots_until_next = next_leader_info.next_leader_slot - next_leader_info.current_slot;
+                    info!("next leader slot in {:?} slots, pubkey: {:?}", slots_until_next, next_leader_info.next_leader_identity);
+
+                    let leader_schedule = searcher_client.get_connected_leaders(ConnectedLeadersRequest{}).await.expect("get connected leaders").into_inner();
+                    connected_leader_slots = leader_schedule.connected_validators.values().fold(HashSet::new(), |mut set, slot_list| {
+                        set.extend(slot_list.slots.clone());
+                        set
+                    });
                 }
             }
         }
@@ -188,16 +198,6 @@ fn update_block_stats(
         num_tx_beat_ours: tx_beat_ours,
         num_successful_bundles: successful_bundles,
         num_pending: len_after,
-    }
-}
-
-fn update_slot(maybe_slot: Option<SlotInfo>, highest_slot: &mut Slot) {
-    if let Some(slot_info) = maybe_slot {
-        if slot_info.slot > *highest_slot {
-            *highest_slot = max(*highest_slot, slot_info.slot);
-        }
-    } else {
-        error!("no slot");
     }
 }
 
