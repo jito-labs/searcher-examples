@@ -1,0 +1,11 @@
+[package]
+name = "searcher-service-client"
+version = "0.1.0"
+edition = "2021"
+description = "Wrapper around the generated gRPC. Adds auth and retry semantics."
+
+[dependencies]
+jito-protos = { path = "../jito_protos" }
+solana-sdk = "1.11.2"
+tokio = "~1.14.1"
+tonic = "0.5.2"

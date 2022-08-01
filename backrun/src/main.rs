@@ -22,6 +22,7 @@ use jito_protos::{
 };
 use log::*;
 use prost_types::Timestamp;
+use searcher_service_client::{AuthClient, AuthInterceptor};
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
     rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
@@ -37,9 +38,11 @@ use solana_sdk::{
 };
 use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use spl_memo::build_memo;
-use tokio::runtime::Builder;
+use tokio::runtime::{Builder, Runtime};
+use tokio::sync::Mutex;
 use tokio::time::interval;
-use tonic::{transport::Channel, Status};
+use tonic::transport::Endpoint;
+use tonic::Status;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -93,10 +96,22 @@ fn main() {
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
     runtime.block_on(async move {
-        let mut searcher_client = SearcherServiceClient::connect(searcher_url)
+        let endpoint = Endpoint::from_shared(searcher_url).expect("invalid url");
+        let grpc_channel = endpoint.connect().await.expect("searcher service connection failed");
+        let token = Arc::new(Mutex::new(String::default()));
+        let client = SearcherServiceClient::with_interceptor(
+            grpc_channel,
+            AuthInterceptor::new(kp.clone(), token.clone()),
+        );
+        let mut searcher_client = AuthClient::new(client, token.clone(), 3);
+        let response = searcher_client
+            .subscribe_pending_transactions(PendingTxSubscriptionRequest {
+                accounts: vec![pubkey.to_string()],
+            })
             .await
-            .expect("searcher service can't connect");
-        info!("connected to searcher");
+            .expect("subscribe to pending transactions");
+        let searcher_client = Arc::new(Mutex::new(searcher_client));
+        info!("Happy searching :)");
 
         let pubsub_client = PubsubClient::new(&pubsub_url).await.expect("subscribing to pubsub client");
         let (mut block_notifications, _block_unsubscribe) = pubsub_client.block_subscribe(
@@ -108,12 +123,6 @@ fn main() {
                 show_rewards: Some(false),
                 max_supported_transaction_version: Some(0),
             })).await.expect("block subscribing");
-        let response = searcher_client
-            .subscribe_pending_transactions(PendingTxSubscriptionRequest {
-                accounts: vec![pubkey.to_string()],
-            })
-            .await
-            .expect("subscribe to pending transactions");
         info!("subscribed to pending transactions");
 
         let mut valid_blockhashes: VecDeque<Hash> = VecDeque::new();
@@ -124,12 +133,13 @@ fn main() {
         let mut tick = interval(Duration::from_secs(5));
 
         let mut pending_tx_stream = response.into_inner();
+        let rt = Runtime::new().unwrap();
         loop {
             tokio::select! {
                 maybe_pending_tx_notification = pending_tx_stream.message() => {
                     let transactions_of_interest = get_transactions_of_interest(maybe_pending_tx_notification, &pubkey, &valid_blockhashes).expect("gets transactions");
                     if !transactions_of_interest.is_empty() {
-                        let new_backruns = backrun_transaction(transactions_of_interest, &mut searcher_client, &valid_blockhashes, &kp).await.expect("sends bundles");
+                        let new_backruns = backrun_transaction(transactions_of_interest, searcher_client.clone(), &valid_blockhashes, &kp).await.expect("sends bundles");
                         backruns.extend(new_backruns);
                     }
                 }
@@ -140,11 +150,12 @@ fn main() {
                     }
                 }
                 _ = tick.tick() => {
-                    let next_leader_info = searcher_client.get_next_scheduled_leader(NextScheduledLeaderRequest{}).await.expect("gets next slot").into_inner();
+                    let mut l_searcher_client = rt.block_on(searcher_client.lock());
+                    let next_leader_info = l_searcher_client.get_next_scheduled_leader(NextScheduledLeaderRequest{}).await.expect("gets next slot").into_inner();
                     let slots_until_next = next_leader_info.next_leader_slot - next_leader_info.current_slot;
                     info!("next leader slot in {:?} slots, pubkey: {:?}", slots_until_next, next_leader_info.next_leader_identity);
 
-                    let leader_schedule = searcher_client.get_connected_leaders(ConnectedLeadersRequest{}).await.expect("get connected leaders").into_inner();
+                    let leader_schedule = l_searcher_client.get_connected_leaders(ConnectedLeadersRequest{}).await.expect("get connected leaders").into_inner();
                     connected_leader_slots = leader_schedule.connected_validators.values().fold(HashSet::new(), |mut set, slot_list| {
                         set.extend(slot_list.slots.clone());
                         set
@@ -205,18 +216,19 @@ fn update_block_stats(
 
 async fn backrun_transaction(
     transactions_of_interest: Vec<VersionedTransaction>,
-    searcher_client: &mut SearcherServiceClient<Channel>,
+    searcher_client: Arc<Mutex<AuthClient>>,
     valid_blockhashes: &VecDeque<Hash>,
     kp: &Arc<Keypair>,
 ) -> Result<Vec<BackrunResponse>, Status> {
     let blockhash = valid_blockhashes.front().unwrap();
 
     let tasks = transactions_of_interest.into_iter().map(|tx| {
-        let mut searcher_client = searcher_client.clone();
         let kp = kp.clone();
         let blockhash = *blockhash;
+        let searcher_client = searcher_client.clone();
 
         tokio::spawn(async move {
+            let mut searcher_client = searcher_client.lock().await;
             let time_sent = Instant::now();
             let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
                 &[build_memo(
