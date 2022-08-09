@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
@@ -6,10 +6,10 @@ use jito_protos::searcher::{
     PendingTxNotification, PendingTxSubscriptionRequest, SendBundleRequest, SendBundleResponse,
 };
 use solana_sdk::signature::{Keypair, Signer};
-use tokio::runtime::Runtime;
-use tokio::sync::Mutex;
-use tonic::{codegen::InterceptedService, transport::Channel, Response, Status, Streaming};
-use tonic::{metadata::MetadataValue, service::Interceptor, Code};
+use tonic::{
+    codegen::InterceptedService, metadata::MetadataValue, service::Interceptor, transport::Channel,
+    Code, Response, Status, Streaming,
+};
 
 // Auth header keys
 pub const MESSAGE_BIN: &str = "message-bin";
@@ -17,6 +17,7 @@ pub const PUBKEY_BIN: &str = "public-key-bin";
 pub const SIGNATURE_BIN: &str = "signature-bin";
 
 /// Wrapper client that takes care of extracting the auth challenge and retrying requests.
+#[derive(Clone)]
 pub struct AuthClient {
     inner: SearcherServiceClient<InterceptedService<Channel, AuthInterceptor>>,
     token: Arc<Mutex<String>>,
@@ -144,7 +145,6 @@ impl AuthClient {
 /// Intercepts requests and adds the necessary headers for auth.
 #[derive(Clone)]
 pub struct AuthInterceptor {
-    rt: Arc<Runtime>,
     /// Used to sign the server generated token.
     keypair: Arc<Keypair>,
     token: Arc<Mutex<String>>,
@@ -152,11 +152,7 @@ pub struct AuthInterceptor {
 
 impl AuthInterceptor {
     pub fn new(keypair: Arc<Keypair>, token: Arc<Mutex<String>>) -> Self {
-        AuthInterceptor {
-            rt: Arc::new(Runtime::new().unwrap()),
-            keypair,
-            token,
-        }
+        AuthInterceptor { keypair, token }
     }
 
     pub async fn should_retry(
@@ -169,7 +165,7 @@ impl AuthInterceptor {
             return false;
         }
 
-        let mut token = token.lock().await;
+        let mut token = token.lock().unwrap();
         if let Some(new_token) = Self::maybe_new_auth_token(status, &token) {
             *token = new_token;
             true
@@ -204,7 +200,7 @@ impl AuthInterceptor {
 
 impl Interceptor for AuthInterceptor {
     fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, Status> {
-        let token = self.rt.block_on(self.token.lock()).clone();
+        let token = self.token.lock().unwrap();
         // Prefix with pubkey and hash it in order to ensure BlockEngine doesn't have us sign a malicious transaction.
         let token = format!("{}-{}", self.keypair.pubkey(), token);
         let hashed_token = solana_sdk::hash::hash(token.as_bytes());
