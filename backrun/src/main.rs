@@ -91,7 +91,6 @@ fn main() {
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
     let token = Arc::new(Mutex::new(String::default()));
     let endpoint = Endpoint::from_shared(searcher_url).expect("invalid url");
-    info!("Happy searching :)");
     let grpc_channel = runtime.block_on(async move {
         endpoint
             .connect()
@@ -113,6 +112,7 @@ fn main() {
             .await
             .expect("subscribe to pending transactions")
     });
+    info!("Happy searching :)");
 
     let mut valid_blockhashes: VecDeque<Hash> = VecDeque::new();
     let mut connected_leader_slots: HashSet<Slot> = HashSet::new();
