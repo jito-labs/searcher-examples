@@ -20,7 +20,6 @@ use jito_protos::{
 };
 use log::*;
 use prost_types::Timestamp;
-use searcher_service_client::{AuthClient, AuthInterceptor};
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
     rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
@@ -38,10 +37,19 @@ use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use spl_memo::build_memo;
 use tokio::{runtime::Builder, time::interval};
 use tonic::{transport::Endpoint, Status};
+use tonic::codegen::InterceptedService;
+use tonic::transport::Channel;
+use jito_protos::auth::auth_service_client::AuthServiceClient;
+use jito_protos::auth::Role;
+use searcher_service_client::token_authenticator::ClientInterceptor;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
+    /// Address for auth service
+    #[clap(long, env)]
+    auth_addr: String,
+
     /// Address for searcher service
     #[clap(long, env)]
     searcher_addr: String,
@@ -78,7 +86,7 @@ struct BackrunStats {
     num_successful_bundles: usize,
     num_pending: usize,
 }
-
+#[allow(clippy::await_holding_lock)]
 fn main() {
     env_logger::init();
     let args: Args = Args::parse();
@@ -89,7 +97,6 @@ fn main() {
     let pubsub_url = args.pubsub_url;
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-    let token = Arc::new(Mutex::new(String::default()));
     let endpoint = Endpoint::from_shared(searcher_url).expect("invalid url");
     let grpc_channel = runtime.block_on(async move {
         endpoint
@@ -97,15 +104,21 @@ fn main() {
             .await
             .expect("searcher service connection failed")
     });
-    let client = SearcherServiceClient::with_interceptor(
+    let interceptor_kp = kp.clone();
+    let interceptor = runtime.block_on(async move {
+        let auth_service_client = AuthServiceClient::connect(args.auth_addr).await.unwrap();
+        ClientInterceptor::new(auth_service_client, interceptor_kp, Role::Relayer)
+    });
+    let searcher_client = Arc::new(Mutex::new(SearcherServiceClient::with_interceptor(
         grpc_channel,
-        AuthInterceptor::new(kp.clone(), token.clone()),
-    );
-    let mut searcher_client = AuthClient::new(client, token, 3);
+        interceptor,
+    )));
 
-    let mut subscription_searcher_client = searcher_client.clone();
+    let subscription_searcher_client = searcher_client.clone();
     let response = runtime.block_on(async move {
         subscription_searcher_client
+            .lock()
+            .unwrap()
             .subscribe_pending_transactions(PendingTxSubscriptionRequest {
                 accounts: vec![pubkey.to_string()],
             })
@@ -148,11 +161,11 @@ fn main() {
                           }
                       }
                       _ = tick.tick() => {
-                          let next_leader_info = searcher_client.get_next_scheduled_leader(NextScheduledLeaderRequest{}).await.expect("gets next slot").into_inner();
+                          let next_leader_info = searcher_client.lock().unwrap().get_next_scheduled_leader(NextScheduledLeaderRequest{}).await.expect("gets next slot").into_inner();
                           let slots_until_next = next_leader_info.next_leader_slot - next_leader_info.current_slot;
                           info!("next leader slot in {:?} slots, pubkey: {:?}", slots_until_next, next_leader_info.next_leader_identity);
 
-                          let leader_schedule = searcher_client.get_connected_leaders(ConnectedLeadersRequest{}).await.expect("get connected leaders").into_inner();
+                          let leader_schedule = searcher_client.lock().unwrap().get_connected_leaders(ConnectedLeadersRequest{}).await.expect("get connected leaders").into_inner();
                           connected_leader_slots = leader_schedule.connected_validators.values().fold(HashSet::new(), |mut set, slot_list| {
                               set.extend(slot_list.slots.clone());
                               set
@@ -211,20 +224,19 @@ fn update_block_stats(
     }
 }
 
+#[allow(clippy::await_holding_lock)]
 async fn backrun_transaction(
     transactions_of_interest: Vec<VersionedTransaction>,
-    searcher_client: AuthClient,
+    searcher_client: Arc<Mutex<SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>>>,
     valid_blockhashes: &VecDeque<Hash>,
     kp: &Arc<Keypair>,
 ) -> Result<Vec<BackrunResponse>, Status> {
     let blockhash = valid_blockhashes.front().unwrap();
+    let mut results = Vec::new();
 
-    let tasks = transactions_of_interest.into_iter().map(|tx| {
+    for tx in transactions_of_interest.into_iter() {
         let kp = kp.clone();
         let blockhash = *blockhash;
-        let mut searcher_client = searcher_client.clone();
-
-        tokio::spawn(async move {
             let time_sent = Instant::now();
             let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
                 &[build_memo(
@@ -247,27 +259,18 @@ async fn backrun_transaction(
                 }),
             };
 
-            if let Ok(response) = searcher_client.send_bundle(bundle.clone()).await {
-                Some(BackrunResponse {
+            let mut l_searcher_client = searcher_client.lock().unwrap();
+            if let Ok(response) = l_searcher_client.send_bundle(bundle.clone()).await {
+                results.push(BackrunResponse {
                     bundle,
                     tx: tx.clone(),
                     backrun_tx,
                     uuid: response.into_inner().uuid,
                     time_sent,
-                })
-            } else {
-                None
+                });
             }
-        })
-    });
-    let results = futures::future::join_all(tasks).await;
-
-    Ok(results
-        .into_iter()
-        .filter(|r| r.is_ok())
-        .filter(|r| r.as_ref().unwrap().is_some())
-        .map(|r| r.unwrap().unwrap())
-        .collect())
+    }
+    Ok(results)
 }
 
 fn get_transactions_of_interest(

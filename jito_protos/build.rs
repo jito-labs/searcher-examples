@@ -4,6 +4,7 @@ fn main() {
     configure()
         .compile(
             &[
+                "protos/auth.proto",
                 "protos/block.proto",
                 "protos/block_engine.proto",
                 "protos/bundle.proto",

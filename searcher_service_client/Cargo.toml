@@ -5,7 +5,12 @@ edition = "2021"
 description = "Wrapper around the generated gRPC. Adds auth and retry semantics."
 
 [dependencies]
+chrono = "0.4.19"
 jito-protos = { path = "../jito_protos" }
+jwt = { version = "0.16.0", features = ["openssl"] }
+log = "0.4.14"
+openssl = "0.10.41"
 solana-sdk = "1.11.2"
+serde = "1.0.130"
 tokio = "~1.14.1"
 tonic = "0.5.2"
