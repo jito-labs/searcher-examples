@@ -2,7 +2,7 @@ use std::{
     collections::{HashSet, VecDeque},
     path::Path,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -109,29 +109,23 @@ fn main() {
         let auth_service_client = AuthServiceClient::connect(args.auth_addr).await.unwrap();
         ClientInterceptor::new(auth_service_client, interceptor_kp, Role::Relayer)
     });
-    let searcher_client = Arc::new(Mutex::new(SearcherServiceClient::with_interceptor(
+    let mut searcher_client = SearcherServiceClient::with_interceptor(
         grpc_channel,
         interceptor,
-    )));
-
-    let subscription_searcher_client = searcher_client.clone();
-    let response = runtime.block_on(async move {
-        subscription_searcher_client
-            .lock()
-            .unwrap()
-            .subscribe_pending_transactions(PendingTxSubscriptionRequest {
-                accounts: vec![pubkey.to_string()],
-            })
-            .await
-            .expect("subscribe to pending transactions")
-    });
-    info!("Happy searching :)");
+    );
 
     let mut valid_blockhashes: VecDeque<Hash> = VecDeque::new();
     let mut connected_leader_slots: HashSet<Slot> = HashSet::new();
     let mut backruns = Vec::new();
-    let mut pending_tx_stream = response.into_inner();
     runtime.block_on(async move {
+        let response = searcher_client
+            .subscribe_pending_transactions(PendingTxSubscriptionRequest {
+                accounts: vec![pubkey.to_string()],
+            })
+            .await
+            .expect("subscribe to pending transactions");
+        let mut pending_tx_stream = response.into_inner();
+        info!("Happy searching :)");
           let mut tick = interval(Duration::from_secs(5));
               let pubsub_client = PubsubClient::new(&pubsub_url).await.expect("subscribing to pubsub client");
               let (mut block_notifications, _block_unsubscribe) =
@@ -150,7 +144,7 @@ fn main() {
                       maybe_pending_tx_notification = pending_tx_stream.message() => {
                           let transactions_of_interest = get_transactions_of_interest(maybe_pending_tx_notification, &pubkey, &valid_blockhashes).expect("gets transactions");
                            if !transactions_of_interest.is_empty() {
-                               let new_backruns = backrun_transaction(transactions_of_interest, searcher_client.clone(), &valid_blockhashes, &kp).await.expect("sends bundles");
+                               let new_backruns = backrun_transaction(transactions_of_interest, &mut searcher_client, &valid_blockhashes, &kp).await.expect("sends bundles");
                                backruns.extend(new_backruns);
                            }
                       }
@@ -161,11 +155,11 @@ fn main() {
                           }
                       }
                       _ = tick.tick() => {
-                          let next_leader_info = searcher_client.lock().unwrap().get_next_scheduled_leader(NextScheduledLeaderRequest{}).await.expect("gets next slot").into_inner();
+                          let next_leader_info = searcher_client.get_next_scheduled_leader(NextScheduledLeaderRequest{}).await.expect("gets next slot").into_inner();
                           let slots_until_next = next_leader_info.next_leader_slot - next_leader_info.current_slot;
                           info!("next leader slot in {:?} slots, pubkey: {:?}", slots_until_next, next_leader_info.next_leader_identity);
 
-                          let leader_schedule = searcher_client.lock().unwrap().get_connected_leaders(ConnectedLeadersRequest{}).await.expect("get connected leaders").into_inner();
+                          let leader_schedule = searcher_client.get_connected_leaders(ConnectedLeadersRequest{}).await.expect("get connected leaders").into_inner();
                           connected_leader_slots = leader_schedule.connected_validators.values().fold(HashSet::new(), |mut set, slot_list| {
                               set.extend(slot_list.slots.clone());
                               set
@@ -227,7 +221,7 @@ fn update_block_stats(
 #[allow(clippy::await_holding_lock)]
 async fn backrun_transaction(
     transactions_of_interest: Vec<VersionedTransaction>,
-    searcher_client: Arc<Mutex<SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>>>,
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     valid_blockhashes: &VecDeque<Hash>,
     kp: &Arc<Keypair>,
 ) -> Result<Vec<BackrunResponse>, Status> {
@@ -259,8 +253,7 @@ async fn backrun_transaction(
                 }),
             };
 
-            let mut l_searcher_client = searcher_client.lock().unwrap();
-            if let Ok(response) = l_searcher_client.send_bundle(bundle.clone()).await {
+            if let Ok(response) = searcher_client.send_bundle(bundle.clone()).await {
                 results.push(BackrunResponse {
                     bundle,
                     tx: tx.clone(),
