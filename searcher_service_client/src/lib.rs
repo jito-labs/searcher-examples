@@ -1,3 +1,5 @@
+pub mod token_authenticator;
+
 use std::sync::{Arc, Mutex};
 
 use jito_protos::searcher::{

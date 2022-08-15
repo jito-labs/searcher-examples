@@ -2630,7 +2630,10 @@ dependencies = [
 name = "searcher-service-client"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "jito-protos",
+ "log",
+ "serde",
  "solana-sdk",
  "tokio",
  "tonic",

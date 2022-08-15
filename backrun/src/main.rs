@@ -2,7 +2,7 @@ use std::{
     collections::{HashSet, VecDeque},
     path::Path,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -20,7 +20,6 @@ use jito_protos::{
 };
 use log::*;
 use prost_types::Timestamp;
-use searcher_service_client::{AuthClient, AuthInterceptor};
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
     rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
@@ -38,10 +37,19 @@ use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use spl_memo::build_memo;
 use tokio::{runtime::Builder, time::interval};
 use tonic::{transport::Endpoint, Status};
+use tonic::codegen::InterceptedService;
+use tonic::transport::Channel;
+use jito_protos::auth::auth_service_client::AuthServiceClient;
+use jito_protos::auth::Role;
+use searcher_service_client::token_authenticator::ClientInterceptor;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
+    /// Address for auth service
+    #[clap(long, env)]
+    auth_addr: String,
+
     /// Address for searcher service
     #[clap(long, env)]
     searcher_addr: String,
@@ -78,7 +86,7 @@ struct BackrunStats {
     num_successful_bundles: usize,
     num_pending: usize,
 }
-
+#[allow(clippy::await_holding_lock)]
 fn main() {
     env_logger::init();
     let args: Args = Args::parse();
@@ -89,7 +97,6 @@ fn main() {
     let pubsub_url = args.pubsub_url;
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-    let token = Arc::new(Mutex::new(String::default()));
     let endpoint = Endpoint::from_shared(searcher_url).expect("invalid url");
     let grpc_channel = runtime.block_on(async move {
         endpoint
@@ -97,28 +104,28 @@ fn main() {
             .await
             .expect("searcher service connection failed")
     });
-    let client = SearcherServiceClient::with_interceptor(
-        grpc_channel,
-        AuthInterceptor::new(kp.clone(), token.clone()),
-    );
-    let mut searcher_client = AuthClient::new(client, token, 3);
-
-    let mut subscription_searcher_client = searcher_client.clone();
-    let response = runtime.block_on(async move {
-        subscription_searcher_client
-            .subscribe_pending_transactions(PendingTxSubscriptionRequest {
-                accounts: vec![pubkey.to_string()],
-            })
-            .await
-            .expect("subscribe to pending transactions")
+    let interceptor_kp = kp.clone();
+    let interceptor = runtime.block_on(async move {
+        let auth_service_client = AuthServiceClient::connect(args.auth_addr).await.unwrap();
+        ClientInterceptor::new(auth_service_client, interceptor_kp, Role::Searcher)
     });
-    info!("Happy searching :)");
+    let mut searcher_client = SearcherServiceClient::with_interceptor(
+        grpc_channel,
+        interceptor,
+    );
 
     let mut valid_blockhashes: VecDeque<Hash> = VecDeque::new();
     let mut connected_leader_slots: HashSet<Slot> = HashSet::new();
     let mut backruns = Vec::new();
-    let mut pending_tx_stream = response.into_inner();
     runtime.block_on(async move {
+        let response = searcher_client
+            .subscribe_pending_transactions(PendingTxSubscriptionRequest {
+                accounts: vec![pubkey.to_string()],
+            })
+            .await
+            .expect("subscribe to pending transactions");
+        let mut pending_tx_stream = response.into_inner();
+        info!("Happy searching :)");
           let mut tick = interval(Duration::from_secs(5));
               let pubsub_client = PubsubClient::new(&pubsub_url).await.expect("subscribing to pubsub client");
               let (mut block_notifications, _block_unsubscribe) =
@@ -137,7 +144,7 @@ fn main() {
                       maybe_pending_tx_notification = pending_tx_stream.message() => {
                           let transactions_of_interest = get_transactions_of_interest(maybe_pending_tx_notification, &pubkey, &valid_blockhashes).expect("gets transactions");
                            if !transactions_of_interest.is_empty() {
-                               let new_backruns = backrun_transaction(transactions_of_interest, searcher_client.clone(), &valid_blockhashes, &kp).await.expect("sends bundles");
+                               let new_backruns = backrun_transaction(transactions_of_interest, &mut searcher_client, &valid_blockhashes, &kp).await.expect("sends bundles");
                                backruns.extend(new_backruns);
                            }
                       }
@@ -211,20 +218,19 @@ fn update_block_stats(
     }
 }
 
+#[allow(clippy::await_holding_lock)]
 async fn backrun_transaction(
     transactions_of_interest: Vec<VersionedTransaction>,
-    searcher_client: AuthClient,
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     valid_blockhashes: &VecDeque<Hash>,
     kp: &Arc<Keypair>,
 ) -> Result<Vec<BackrunResponse>, Status> {
     let blockhash = valid_blockhashes.front().unwrap();
+    let mut results = Vec::new();
 
-    let tasks = transactions_of_interest.into_iter().map(|tx| {
+    for tx in transactions_of_interest.into_iter() {
         let kp = kp.clone();
         let blockhash = *blockhash;
-        let mut searcher_client = searcher_client.clone();
-
-        tokio::spawn(async move {
             let time_sent = Instant::now();
             let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
                 &[build_memo(
@@ -248,26 +254,16 @@ async fn backrun_transaction(
             };
 
             if let Ok(response) = searcher_client.send_bundle(bundle.clone()).await {
-                Some(BackrunResponse {
+                results.push(BackrunResponse {
                     bundle,
                     tx: tx.clone(),
                     backrun_tx,
                     uuid: response.into_inner().uuid,
                     time_sent,
-                })
-            } else {
-                None
+                });
             }
-        })
-    });
-    let results = futures::future::join_all(tasks).await;
-
-    Ok(results
-        .into_iter()
-        .filter(|r| r.is_ok())
-        .filter(|r| r.as_ref().unwrap().is_some())
-        .map(|r| r.unwrap().unwrap())
-        .collect())
+    }
+    Ok(results)
 }
 
 fn get_transactions_of_interest(
