@@ -107,7 +107,7 @@ fn main() {
     let interceptor_kp = kp.clone();
     let interceptor = runtime.block_on(async move {
         let auth_service_client = AuthServiceClient::connect(args.auth_addr).await.unwrap();
-        ClientInterceptor::new(auth_service_client, interceptor_kp, Role::Relayer)
+        ClientInterceptor::new(auth_service_client, interceptor_kp, Role::Searcher)
     });
     let mut searcher_client = SearcherServiceClient::with_interceptor(
         grpc_channel,
