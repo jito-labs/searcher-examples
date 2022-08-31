@@ -8,6 +8,8 @@ use std::{
 
 use clap::Parser;
 use futures_util::StreamExt;
+use jito_protos::auth::auth_service_client::AuthServiceClient;
+use jito_protos::auth::Role;
 use jito_protos::{
     bundle::Bundle,
     convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet},
@@ -20,6 +22,7 @@ use jito_protos::{
 };
 use log::*;
 use prost_types::Timestamp;
+use searcher_service_client::token_authenticator::ClientInterceptor;
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
     rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
@@ -36,12 +39,9 @@ use solana_sdk::{
 use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use spl_memo::build_memo;
 use tokio::{runtime::Builder, time::interval};
-use tonic::{transport::Endpoint, Status};
 use tonic::codegen::InterceptedService;
 use tonic::transport::Channel;
-use jito_protos::auth::auth_service_client::AuthServiceClient;
-use jito_protos::auth::Role;
-use searcher_service_client::token_authenticator::ClientInterceptor;
+use tonic::{transport::Endpoint, Status};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -97,7 +97,12 @@ fn main() {
     let pubsub_url = args.pubsub_url;
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-    let endpoint = Endpoint::from_shared(searcher_url).expect("invalid url");
+    let mut endpoint = Endpoint::from_shared(searcher_url.clone()).expect("invalid searcher url");
+    if searcher_url.contains("https") {
+        endpoint = endpoint
+            .tls_config(tonic::transport::ClientTlsConfig::new())
+            .expect("failed to set tls_config");
+    }
     let grpc_channel = runtime.block_on(async move {
         endpoint
             .connect()
@@ -106,13 +111,23 @@ fn main() {
     });
     let interceptor_kp = kp.clone();
     let interceptor = runtime.block_on(async move {
-        let auth_service_client = AuthServiceClient::connect(args.auth_addr).await.unwrap();
-        ClientInterceptor::new(auth_service_client, interceptor_kp, Role::Searcher)
+        info!("trying to auth {}", args.auth_addr);
+        let mut endpoint = Endpoint::from_shared(args.auth_addr.clone()).expect("invalid auth url");
+        if args.auth_addr.contains("https") {
+            endpoint = endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .expect("failed to set tls_config");
+        }
+        let channel = endpoint
+            .connect()
+            .await
+            .expect("failed to connect to auth service");
+        let auth_client = AuthServiceClient::new(channel);
+        info!("connected to auth {}", args.auth_addr);
+        ClientInterceptor::new(auth_client, interceptor_kp, Role::Searcher)
     });
-    let mut searcher_client = SearcherServiceClient::with_interceptor(
-        grpc_channel,
-        interceptor,
-    );
+
+    let mut searcher_client = SearcherServiceClient::with_interceptor(grpc_channel, interceptor);
 
     let mut valid_blockhashes: VecDeque<Hash> = VecDeque::new();
     let mut connected_leader_slots: HashSet<Slot> = HashSet::new();
@@ -225,43 +240,43 @@ async fn backrun_transaction(
     valid_blockhashes: &VecDeque<Hash>,
     kp: &Arc<Keypair>,
 ) -> Result<Vec<BackrunResponse>, Status> {
-    let blockhash = valid_blockhashes.front().unwrap();
+    let blockhash = *valid_blockhashes.front().unwrap();
+    info!("using blockhash {}", blockhash);
     let mut results = Vec::new();
 
     for tx in transactions_of_interest.into_iter() {
         let kp = kp.clone();
-        let blockhash = *blockhash;
-            let time_sent = Instant::now();
-            let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-                &[build_memo(
-                    format!("jito backrun: {:?}", tx.signatures[0].to_string()).as_bytes(),
-                    &[],
-                )],
-                Some(&kp.pubkey()),
-                &[kp.as_ref()],
-                blockhash,
-            ));
-            let bundle = SendBundleRequest {
-                bundle: Some(Bundle {
-                    header: Some(Header {
-                        ts: Some(Timestamp::from(SystemTime::now())),
-                    }),
-                    packets: vec![
-                        proto_packet_from_versioned_tx(&tx),
-                        proto_packet_from_versioned_tx(&backrun_tx),
-                    ],
+        let time_sent = Instant::now();
+        let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+            &[build_memo(
+                format!("jito backrun: {:?}", tx.signatures[0].to_string()).as_bytes(),
+                &[],
+            )],
+            Some(&kp.pubkey()),
+            &[kp.as_ref()],
+            blockhash,
+        ));
+        let bundle = SendBundleRequest {
+            bundle: Some(Bundle {
+                header: Some(Header {
+                    ts: Some(Timestamp::from(SystemTime::now())),
                 }),
-            };
+                packets: vec![
+                    proto_packet_from_versioned_tx(&tx),
+                    proto_packet_from_versioned_tx(&backrun_tx),
+                ],
+            }),
+        };
 
-            if let Ok(response) = searcher_client.send_bundle(bundle.clone()).await {
-                results.push(BackrunResponse {
-                    bundle,
-                    tx: tx.clone(),
-                    backrun_tx,
-                    uuid: response.into_inner().uuid,
-                    time_sent,
-                });
-            }
+        if let Ok(response) = searcher_client.send_bundle(bundle.clone()).await {
+            results.push(BackrunResponse {
+                bundle,
+                tx: tx.clone(),
+                backrun_tx,
+                uuid: response.into_inner().uuid,
+                time_sent,
+            });
+        }
     }
     Ok(results)
 }
