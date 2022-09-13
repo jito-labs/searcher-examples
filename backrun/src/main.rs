@@ -48,17 +48,21 @@ struct Args {
     #[clap(long, env)]
     searcher_addr: String,
 
-    /// Backrun account defaults to pyth oracle on testnet
-    #[clap(long, env, default_value_t = String::from("8tfDNiaEyrV6Q1U4DEXrEigs9DoDtkugzFbybENEbCDz"))]
+    /// Account to backrun
+    #[clap(long, env)]
     backrun_account: String,
 
-    /// Path to Keypair file
+    /// Path to keypair file
     #[clap(long, env)]
     keypair_file: String,
 
-    /// Pubsub URL
+    /// Pubsub URL. Note that this RPC server must have --rpc-pubsub-enable-block-subscription enabled
     #[clap(long, env)]
     pubsub_url: String,
+
+    /// Memo program message
+    #[clap(long, env, default_value_t = String::from("jito backrun"))]
+    message: String,
 }
 
 #[derive(Debug)]
