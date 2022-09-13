@@ -1,9 +1,6 @@
+use std::sync::RwLock;
 use std::time::SystemTime;
-use std::{
-    result,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{result, sync::Arc, time::Duration};
 
 use jito_protos::auth::{
     auth_service_client::AuthServiceClient, GenerateAuthChallengeRequest,
@@ -24,7 +21,7 @@ type Result<T> = result::Result<T, Status>;
 #[derive(Clone)]
 pub struct ClientInterceptor {
     /// The token added to each request header.
-    bearer_token: Arc<Mutex<String>>,
+    bearer_token: Arc<RwLock<String>>,
 }
 
 impl ClientInterceptor {
@@ -36,7 +33,7 @@ impl ClientInterceptor {
         let (access_token, refresh_token) =
             Self::auth(&mut auth_service_client, keypair, role).await?;
 
-        let bearer_token = Arc::new(Mutex::new(access_token.value.clone()));
+        let bearer_token = Arc::new(RwLock::new(access_token.value.clone()));
 
         let _refresh_token_thread = Self::spawn_token_refresh_thread(
             auth_service_client,
@@ -79,7 +76,7 @@ impl ClientInterceptor {
 
     fn spawn_token_refresh_thread(
         mut auth_service_client: AuthServiceClient<Channel>,
-        bearer_token: Arc<Mutex<String>>,
+        bearer_token: Arc<RwLock<String>>,
         refresh_token: Token,
         access_token_expiration: Timestamp,
         keypair: Arc<Keypair>,
@@ -113,7 +110,7 @@ impl ClientInterceptor {
                         let (new_access_token, new_refresh_token) =
                             Self::auth(&mut auth_service_client, &keypair, role).await?;
 
-                        *bearer_token.lock().unwrap() = new_access_token.value.clone();
+                        *bearer_token.write().unwrap() = new_access_token.value.clone();
                         access_token_expiration = new_access_token.expires_at_utc.unwrap();
                         refresh_token = new_refresh_token;
                     }
@@ -126,7 +123,7 @@ impl ClientInterceptor {
                             .await?
                             .into_inner();
                         let access_token = refresh_resp.access_token.unwrap();
-                        *bearer_token.lock().unwrap() = access_token.value.clone();
+                        *bearer_token.write().unwrap() = access_token.value.clone();
                         access_token_expiration = access_token.expires_at_utc.unwrap();
                     }
                     _ => {
@@ -140,7 +137,7 @@ impl ClientInterceptor {
 
 impl Interceptor for ClientInterceptor {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>> {
-        let l_token = self.bearer_token.lock().unwrap();
+        let l_token = self.bearer_token.read().unwrap();
         if !l_token.is_empty() {
             request.metadata_mut().insert(
                 AUTHORIZATION_HEADER,
