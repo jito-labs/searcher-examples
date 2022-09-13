@@ -14,9 +14,10 @@ jito-protos = { path = "../jito_protos" }
 log = "0.4.14"
 prost-types = "0.8.0"
 rand = "0.8.5"
+searcher-service-client = { path = "../searcher_service_client" }
 solana-client = "=1.11.2"
 solana-sdk = "=1.11.2"
 solana-transaction-status = "=1.11.2"
 spl-memo = "3.0.1"
 tokio = "~1.14.1"
-tonic = "0.5.2"
+tonic = { version = "0.5.2", features = ["tls", "tls-roots", "tls-webpki-roots"]}

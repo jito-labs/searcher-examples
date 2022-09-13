@@ -27,3 +27,7 @@ pub mod searcher {
 pub mod shared {
     tonic::include_proto!("shared");
 }
+
+pub mod auth {
+    tonic::include_proto!("auth");
+}

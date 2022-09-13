@@ -1,6 +1,5 @@
-use std::collections::HashSet;
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     path::Path,
     str::FromStr,
     sync::Arc,
@@ -9,19 +8,21 @@ use std::{
 
 use clap::Parser;
 use futures_util::StreamExt;
-use jito_protos::searcher::ConnectedLeadersRequest;
-use jito_protos::searcher::NextScheduledLeaderRequest;
+use jito_protos::auth::auth_service_client::AuthServiceClient;
+use jito_protos::auth::Role;
 use jito_protos::{
     bundle::Bundle,
     convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet},
     searcher::{
-        searcher_service_client::SearcherServiceClient, PendingTxNotification,
-        PendingTxSubscriptionRequest, SendBundleRequest,
+        searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
+        NextScheduledLeaderRequest, PendingTxNotification, PendingTxSubscriptionRequest,
+        SendBundleRequest,
     },
     shared::Header,
 };
 use log::*;
 use prost_types::Timestamp;
+use searcher_service_client::token_authenticator::ClientInterceptor;
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
     rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
@@ -37,13 +38,18 @@ use solana_sdk::{
 };
 use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use spl_memo::build_memo;
-use tokio::runtime::Builder;
-use tokio::time::interval;
-use tonic::{transport::Channel, Status};
+use tokio::{runtime::Builder, time::interval};
+use tonic::codegen::InterceptedService;
+use tonic::transport::Channel;
+use tonic::{transport::Endpoint, Status};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
+    /// Address for auth service
+    #[clap(long, env)]
+    auth_addr: String,
+
     /// Address for searcher service
     #[clap(long, env)]
     searcher_addr: String,
@@ -84,10 +90,9 @@ struct BackrunStats {
     num_successful_bundles: usize,
     num_pending: usize,
 }
-
+#[allow(clippy::await_holding_lock)]
 fn main() {
     env_logger::init();
-
     let args: Args = Args::parse();
 
     let kp = Arc::new(read_keypair_file(Path::new(&args.keypair_file)).expect("parse kp file"));
@@ -96,67 +101,92 @@ fn main() {
     let pubsub_url = args.pubsub_url;
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-    runtime.block_on(async move {
-        let mut searcher_client = SearcherServiceClient::connect(searcher_url)
+    let mut endpoint = Endpoint::from_shared(searcher_url.clone()).expect("invalid searcher url");
+    if searcher_url.contains("https") {
+        endpoint = endpoint
+            .tls_config(tonic::transport::ClientTlsConfig::new())
+            .expect("failed to set tls_config");
+    }
+    let grpc_channel = runtime.block_on(async move {
+        endpoint
+            .connect()
             .await
-            .expect("searcher service can't connect");
-        info!("connected to searcher");
+            .expect("searcher service connection failed")
+    });
+    let interceptor_kp = kp.clone();
+    let interceptor = runtime.block_on(async move {
+        info!("trying to auth {}", args.auth_addr);
+        let mut endpoint = Endpoint::from_shared(args.auth_addr.clone()).expect("invalid auth url");
+        if args.auth_addr.contains("https") {
+            endpoint = endpoint
+                .tls_config(tonic::transport::ClientTlsConfig::new())
+                .expect("failed to set tls_config");
+        }
+        let channel = endpoint
+            .connect()
+            .await
+            .expect("failed to connect to auth service");
+        let auth_client = AuthServiceClient::new(channel);
+        info!("connected to auth {}", args.auth_addr);
+        ClientInterceptor::new(auth_client, interceptor_kp, Role::Searcher)
+    });
 
-        let pubsub_client = PubsubClient::new(&pubsub_url).await.expect("subscribing to pubsub client");
-        let (mut block_notifications, _block_unsubscribe) = pubsub_client.block_subscribe(
-            RpcBlockSubscribeFilter::All,
-            Some(RpcBlockSubscribeConfig {
-                commitment: Some(CommitmentConfig { commitment: CommitmentLevel::Confirmed }),
-                encoding: Some(UiTransactionEncoding::Base64),
-                transaction_details: Some(TransactionDetails::Signatures),
-                show_rewards: Some(false),
-                max_supported_transaction_version: Some(0),
-            })).await.expect("block subscribing");
+    let mut searcher_client = SearcherServiceClient::with_interceptor(grpc_channel, interceptor);
+
+    let mut valid_blockhashes: VecDeque<Hash> = VecDeque::new();
+    let mut connected_leader_slots: HashSet<Slot> = HashSet::new();
+    let mut backruns = Vec::new();
+    runtime.block_on(async move {
         let response = searcher_client
             .subscribe_pending_transactions(PendingTxSubscriptionRequest {
                 accounts: vec![pubkey.to_string()],
             })
             .await
             .expect("subscribe to pending transactions");
-        info!("subscribed to pending transactions");
-
-        let mut valid_blockhashes: VecDeque<Hash> = VecDeque::new();
-
-        let mut connected_leader_slots: HashSet<Slot> = HashSet::new();
-
-        let mut backruns = Vec::new();
-        let mut tick = interval(Duration::from_secs(5));
-
         let mut pending_tx_stream = response.into_inner();
-        loop {
-            tokio::select! {
-                maybe_pending_tx_notification = pending_tx_stream.message() => {
-                    let transactions_of_interest = get_transactions_of_interest(maybe_pending_tx_notification, &pubkey, &valid_blockhashes).expect("gets transactions");
-                    if !transactions_of_interest.is_empty() {
-                        let new_backruns = backrun_transaction(transactions_of_interest, &mut searcher_client, &valid_blockhashes, &kp).await.expect("sends bundles");
-                        backruns.extend(new_backruns);
-                    }
-                }
-                maybe_block = block_notifications.next() => {
-                    let backrun_stats = update_block_stats(maybe_block, &mut valid_blockhashes, &mut backruns);
-                    if connected_leader_slots.contains(&backrun_stats.slot) {
-                        info!("backrun_stats: {:?}", backrun_stats);
-                    }
-                }
-                _ = tick.tick() => {
-                    let next_leader_info = searcher_client.get_next_scheduled_leader(NextScheduledLeaderRequest{}).await.expect("gets next slot").into_inner();
-                    let slots_until_next = next_leader_info.next_leader_slot - next_leader_info.current_slot;
-                    info!("next leader slot in {:?} slots, pubkey: {:?}", slots_until_next, next_leader_info.next_leader_identity);
+        info!("Happy searching :)");
+          let mut tick = interval(Duration::from_secs(5));
+              let pubsub_client = PubsubClient::new(&pubsub_url).await.expect("subscribing to pubsub client");
+              let (mut block_notifications, _block_unsubscribe) =
+                  pubsub_client.block_subscribe(
+                      RpcBlockSubscribeFilter::All,
+                      Some(RpcBlockSubscribeConfig {
+                          commitment: Some(CommitmentConfig { commitment: CommitmentLevel::Confirmed }),
+                          encoding: Some(UiTransactionEncoding::Base64),
+                          transaction_details: Some(TransactionDetails::Signatures),
+                          show_rewards: Some(false),
+                          max_supported_transaction_version: Some(0),
+                      })).await.expect("block subscribing");
+              info!("subscribed to pending transactions");
+              loop {
+                  tokio::select! {
+                      maybe_pending_tx_notification = pending_tx_stream.message() => {
+                          let transactions_of_interest = get_transactions_of_interest(maybe_pending_tx_notification, &pubkey, &valid_blockhashes).expect("gets transactions");
+                           if !transactions_of_interest.is_empty() {
+                               let new_backruns = backrun_transaction(transactions_of_interest, &mut searcher_client, &valid_blockhashes, &kp).await.expect("sends bundles");
+                               backruns.extend(new_backruns);
+                           }
+                      }
+                      maybe_block = block_notifications.next() => {
+                          let backrun_stats = update_block_stats(maybe_block, &mut valid_blockhashes, &mut backruns);
+                          if connected_leader_slots.contains(&backrun_stats.slot) {
+                              info!("backrun_stats: {:?}", backrun_stats);
+                          }
+                      }
+                      _ = tick.tick() => {
+                          let next_leader_info = searcher_client.get_next_scheduled_leader(NextScheduledLeaderRequest{}).await.expect("gets next slot").into_inner();
+                          let slots_until_next = next_leader_info.next_leader_slot - next_leader_info.current_slot;
+                          info!("next leader slot in {:?} slots, pubkey: {:?}", slots_until_next, next_leader_info.next_leader_identity);
 
-                    let leader_schedule = searcher_client.get_connected_leaders(ConnectedLeadersRequest{}).await.expect("get connected leaders").into_inner();
-                    connected_leader_slots = leader_schedule.connected_validators.values().fold(HashSet::new(), |mut set, slot_list| {
-                        set.extend(slot_list.slots.clone());
-                        set
-                    });
-                }
-            }
-        }
-    });
+                          let leader_schedule = searcher_client.get_connected_leaders(ConnectedLeadersRequest{}).await.expect("get connected leaders").into_inner();
+                          connected_leader_slots = leader_schedule.connected_validators.values().fold(HashSet::new(), |mut set, slot_list| {
+                              set.extend(slot_list.slots.clone());
+                              set
+                          });
+                      }
+                  }
+              }
+          });
 }
 
 fn update_block_stats(
@@ -207,63 +237,52 @@ fn update_block_stats(
     }
 }
 
+#[allow(clippy::await_holding_lock)]
 async fn backrun_transaction(
     transactions_of_interest: Vec<VersionedTransaction>,
-    searcher_client: &mut SearcherServiceClient<Channel>,
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     valid_blockhashes: &VecDeque<Hash>,
     kp: &Arc<Keypair>,
 ) -> Result<Vec<BackrunResponse>, Status> {
-    let blockhash = valid_blockhashes.front().unwrap();
+    let blockhash = *valid_blockhashes.front().unwrap();
+    info!("using blockhash {}", blockhash);
+    let mut results = Vec::new();
 
-    let tasks = transactions_of_interest.into_iter().map(|tx| {
-        let mut searcher_client = searcher_client.clone();
+    for tx in transactions_of_interest.into_iter() {
         let kp = kp.clone();
-        let blockhash = *blockhash;
-
-        tokio::spawn(async move {
-            let time_sent = Instant::now();
-            let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-                &[build_memo(
-                    format!("jito backrun: {:?}", tx.signatures[0].to_string()).as_bytes(),
-                    &[],
-                )],
-                Some(&kp.pubkey()),
-                &[kp.as_ref()],
-                blockhash,
-            ));
-            let bundle = SendBundleRequest {
-                bundle: Some(Bundle {
-                    header: Some(Header {
-                        ts: Some(Timestamp::from(SystemTime::now())),
-                    }),
-                    packets: vec![
-                        proto_packet_from_versioned_tx(&tx),
-                        proto_packet_from_versioned_tx(&backrun_tx),
-                    ],
+        let time_sent = Instant::now();
+        let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+            &[build_memo(
+                format!("jito backrun: {:?}", tx.signatures[0].to_string()).as_bytes(),
+                &[],
+            )],
+            Some(&kp.pubkey()),
+            &[kp.as_ref()],
+            blockhash,
+        ));
+        let bundle = SendBundleRequest {
+            bundle: Some(Bundle {
+                header: Some(Header {
+                    ts: Some(Timestamp::from(SystemTime::now())),
                 }),
-            };
+                packets: vec![
+                    proto_packet_from_versioned_tx(&tx),
+                    proto_packet_from_versioned_tx(&backrun_tx),
+                ],
+            }),
+        };
 
-            if let Ok(response) = searcher_client.send_bundle(bundle.clone()).await {
-                Some(BackrunResponse {
-                    bundle,
-                    tx: tx.clone(),
-                    backrun_tx,
-                    uuid: response.into_inner().uuid,
-                    time_sent,
-                })
-            } else {
-                None
-            }
-        })
-    });
-    let results = futures::future::join_all(tasks).await;
-
-    Ok(results
-        .into_iter()
-        .filter(|r| r.is_ok())
-        .filter(|r| r.as_ref().unwrap().is_some())
-        .map(|r| r.unwrap().unwrap())
-        .collect())
+        if let Ok(response) = searcher_client.send_bundle(bundle.clone()).await {
+            results.push(BackrunResponse {
+                bundle,
+                tx: tx.clone(),
+                backrun_tx,
+                uuid: response.into_inner().uuid,
+                time_sent,
+            });
+        }
+    }
+    Ok(results)
 }
 
 fn get_transactions_of_interest(
