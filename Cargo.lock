@@ -1437,6 +1437,7 @@ checksum = "112c678d4050afce233f4f2852bb2eb519230b3cf12f33585275537d7e41578d"
 name = "jito-backrun-example"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "chrono",
  "clap 3.2.15",
  "crossbeam-channel",

@@ -21,6 +21,7 @@ type Result<T> = result::Result<T, Status>;
 
 /// Adds the token to each requests' authorization header.
 /// Manages refreshing the token in a separate thread.
+#[derive(Clone)]
 pub struct ClientInterceptor {
     /// The token added to each request header.
     bearer_token: Arc<Mutex<String>>,
