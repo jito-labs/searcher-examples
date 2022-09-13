@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
 
 use clap::Parser;
+use env_logger::TimestampPrecision;
 use futures_util::StreamExt;
 use jito_protos::auth::auth_service_client::AuthServiceClient;
 use jito_protos::auth::Role;
@@ -280,7 +281,9 @@ async fn run_searcher_loop(
 }
 
 fn main() -> Result<()> {
-    env_logger::init();
+    env_logger::builder()
+        .format_timestamp(Some(TimestampPrecision::Micros))
+        .init();
     let args: Args = Args::parse();
 
     let payer_keypair =
