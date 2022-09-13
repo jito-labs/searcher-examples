@@ -19,5 +19,6 @@ solana-client = "=1.11.2"
 solana-sdk = "=1.11.2"
 solana-transaction-status = "=1.11.2"
 spl-memo = "3.0.1"
+thiserror = "1.0.34"
 tokio = "~1.14.1"
-tonic = { version = "0.5.2", features = ["tls", "tls-roots", "tls-webpki-roots"]}
+tonic = { version = "0.5.2", features = ["tls", "tls-roots", "tls-webpki-roots"] }
