@@ -1,5 +1,5 @@
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
 
 use clap::Parser;
@@ -21,7 +21,9 @@ use searcher_service_client::token_authenticator::ClientInterceptor;
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::pubsub_client::{PubsubClient, PubsubClientError};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_response::SlotUpdate;
+use solana_client::rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter};
+use solana_client::rpc_response;
+use solana_client::rpc_response::{RpcBlockUpdate, SlotUpdate};
 use solana_sdk::clock::Slot;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::hash::Hash;
@@ -33,7 +35,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{read_keypair_file, Keypair},
 };
-use solana_transaction_status::{EncodedConfirmedBlock, EncodedTransactionWithStatusMeta};
+use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use spl_memo::build_memo;
 use thiserror::Error;
 use tokio::{runtime::Builder, time::interval};
@@ -259,34 +261,105 @@ async fn maintenance_tick(
 
 fn print_block_stats(
     block_stats: &mut HashMap<Slot, BlockStats>,
-    blocks: &mut VecDeque<(Pubkey, Slot, EncodedConfirmedBlock)>,
-) {
-    for (leader, slot, block) in blocks.iter() {
-        // find slots <= this block's slot
-        let bundle_stats: Vec<(&Slot, &BlockStats)> = block_stats
-            .iter()
-            .filter(|(s, _)| **s <= *slot)
-            .map(|(s, b)| (s, b))
-            .collect();
-        let num_bundles_sent_before_during_slot: usize =
-            bundle_stats.iter().map(|(_, b)| b.bundles_sent.len()).sum();
+    block: Option<rpc_response::Response<RpcBlockUpdate>>,
+    leader_schedule: &HashMap<Pubkey, HashSet<Slot>>,
+) -> Result<()> {
+    let block = block
+        .ok_or_else(|| PubsubClientError::ConnectionClosed("block_subscribe closed".to_string()))?;
+    debug!("got block: {}", block.context.slot);
+    for (leader, slots) in leader_schedule {
+        if slots.contains(&block.context.slot) {
+            info!("block stats: {}", block.context.slot);
+            info!(" leader: {}", leader);
 
-        let versioned_txs: Vec<VersionedTransaction> = block
-            .transactions
-            .iter()
-            .filter_map(|tx| tx.transaction.decode())
-            .collect();
+            if let Some(b) = block.value.block {
+                if let Some(sigs) = b.signatures {
+                    let signatures: HashSet<Signature> = sigs
+                        .iter()
+                        .map(|s| Signature::from_str(&s).unwrap())
+                        .collect();
 
-        info!("block stats slot: {}", slot);
-        info!("leader: {:?}", leader);
-        info!("num transactions: {}", versioned_txs.len());
-        info!(
-            "bundles sent before and same slot: {}",
-            num_bundles_sent_before_during_slot
-        );
+                    // find bundles sent on or before this block
+                    let bundles_sent: HashMap<
+                        &Slot,
+                        &Vec<(
+                            BundledTransactions,
+                            result::Result<Response<SendBundleResponse>, Status>,
+                        )>,
+                    > = block_stats
+                        .iter()
+                        .filter(|(slot, _)| **slot <= block.context.slot)
+                        .map(|(slot, stats)| (slot, stats.bundles_sent.as_ref()))
+                        .collect();
+
+                    let num_bundles_sent: usize = bundles_sent
+                        .iter()
+                        .map(|(_, bundles_sent)| bundles_sent.len())
+                        .sum();
+                    let num_bundles_sent_ok: usize = bundles_sent
+                        .iter()
+                        .map(|(_, bundles_sent)| {
+                            bundles_sent
+                                .iter()
+                                .filter(|(_, send_response)| send_response.is_ok())
+                                .count()
+                        })
+                        .sum();
+
+                    let bundles_landed: Vec<(&Slot, &BundledTransactions)> = bundles_sent
+                        .iter()
+                        .flat_map(|(slot, bundles_sent)| {
+                            bundles_sent
+                                .iter()
+                                .filter(|(_, send_response)| send_response.is_ok())
+                                .filter_map(|(bundle_sent, _)| {
+                                    if bundle_sent
+                                        .versioned_txs
+                                        .iter()
+                                        .all(|tx| signatures.contains(&tx.signatures[0]))
+                                    {
+                                        Some((*slot, bundle_sent))
+                                    } else {
+                                        None
+                                    }
+                                })
+                        })
+                        .collect();
+
+                    info!(" txs: {}", signatures.len());
+                    info!(" num_bundles_sent: {}", num_bundles_sent);
+                    info!(" num_bundles_sent_ok: {}", num_bundles_sent_ok);
+                    info!(
+                        " num_bundles_sent_err: {}",
+                        num_bundles_sent - num_bundles_sent_ok
+                    );
+
+                    info!("num_bundes_landed: {}", bundles_landed.len());
+                    info!(
+                        "num_bundles_dropped: {}",
+                        num_bundles_sent - bundles_landed.len()
+                    );
+
+                    // let num_bundles_landed = info!("num_bundles_landed: {}");
+                } else {
+                    info!("missing signatures");
+                }
+            } else {
+                info!(" txs: 0");
+            }
+
+            break;
+        }
     }
 
-    blocks.clear();
+    // leaders last slot, clear everything out
+    // might mess up metrics if leader doesn't produce a last slot or there's lots of slots
+    // close to each other
+    if block.context.slot % 4 == 3 {
+        block_stats.clear();
+    }
+
+    Ok(())
 }
 
 async fn run_searcher_loop(
@@ -298,10 +371,8 @@ async fn run_searcher_loop(
     message: String,
     tip_program_pubkey: Pubkey,
 ) -> Result<()> {
-    const BLOCK_OFFSET: u64 = 50;
     let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
-    let mut blocks: VecDeque<(Pubkey, Slot, EncodedConfirmedBlock)> = VecDeque::new();
 
     let mut rng = thread_rng();
 
@@ -328,6 +399,21 @@ async fn run_searcher_loop(
     let (mut slot_update_subscription, _unsubscribe_fn) =
         pubsub_client.slot_updates_subscribe().await?;
 
+    let (mut block_update_subscription, _unsubscribe_fn) = pubsub_client
+        .block_subscribe(
+            RpcBlockSubscribeFilter::All,
+            Some(RpcBlockSubscribeConfig {
+                commitment: Some(CommitmentConfig {
+                    commitment: CommitmentLevel::Confirmed,
+                }),
+                encoding: Some(UiTransactionEncoding::Base64),
+                transaction_details: Some(TransactionDetails::Signatures),
+                show_rewards: Some(true),
+                max_supported_transaction_version: None,
+            }),
+        )
+        .await?;
+
     let mut highest_slot = 0;
 
     let mut tick = interval(Duration::from_secs(5));
@@ -335,7 +421,6 @@ async fn run_searcher_loop(
         tokio::select! {
             _ = tick.tick() => {
                 maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash).await?;
-                print_block_stats(&mut block_stats, &mut blocks);
             }
             maybe_pending_tx_notification = pending_tx_stream.next() => {
                 let bundles = build_bundles(maybe_pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message)?;
@@ -343,15 +428,22 @@ async fn run_searcher_loop(
                     let results = send_bundles(&mut searcher_client, &bundles).await?;
                     debug!("sent bundles num: {:?}", bundles.len());
 
+                    let mut inserted_new = false;
                     match block_stats.entry(highest_slot) {
                         Entry::Occupied(mut entry) => {
                             entry.get_mut().bundles_sent.extend(bundles.into_iter().zip(results.into_iter()))
                         }
                         Entry::Vacant(entry) => {
+                            inserted_new = true;
                             entry.insert(BlockStats {
                                 slot: highest_slot,
                                 bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
                             });
+                        }
+                    }
+                    if inserted_new {
+                        if let Some(stats) = block_stats.get(&(highest_slot - 1)) {
+                            info!("send bundle stats slot: {} bundles: {}", highest_slot - 1, stats.bundles_sent.len());
                         }
                     }
                 }
@@ -361,24 +453,15 @@ async fn run_searcher_loop(
                     Some(SlotUpdate::FirstShredReceived {slot, timestamp: _}) => {
                         debug!("highest slot: {:?}", highest_slot);
                         highest_slot = slot;
-
-                        let block_to_get = highest_slot - BLOCK_OFFSET;
-                        for (leader, slots) in leader_schedule.iter() {
-                            if slots.contains(&block_to_get) {
-                                if let Ok(block) = rpc_client.get_block(block_to_get).await {
-                                    blocks.push_back((*leader, block_to_get, block));
-                                    break;
-                                } else {
-                                    warn!("error getting block {} for leader {}", block_to_get, leader);
-                                }
-                            }
-                        }
                     }
                     Some(_) => {}
                     None => {
                         return Err(PubsubClientError::ConnectionClosed("slot update connection closed".to_string()).into());
                     }
                 }
+            }
+            maybe_block = block_update_subscription.next() => {
+                print_block_stats(&mut block_stats, maybe_block, &leader_schedule)?;
             }
         }
     }
