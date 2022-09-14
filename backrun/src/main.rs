@@ -1,5 +1,5 @@
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
 
 use clap::Parser;
@@ -25,7 +25,7 @@ use solana_client::rpc_response::SlotUpdate;
 use solana_sdk::clock::Slot;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::hash::Hash;
-use solana_sdk::signature::Signer;
+use solana_sdk::signature::{Signature, Signer};
 use solana_sdk::system_instruction::transfer;
 use solana_sdk::transaction::Transaction;
 use solana_sdk::transaction::VersionedTransaction;
@@ -33,6 +33,7 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{read_keypair_file, Keypair},
 };
+use solana_transaction_status::{EncodedConfirmedBlock, EncodedTransactionWithStatusMeta};
 use spl_memo::build_memo;
 use thiserror::Error;
 use tokio::{runtime::Builder, time::interval};
@@ -256,34 +257,37 @@ async fn maintenance_tick(
     Ok(())
 }
 
-// async fn update_block_stats(
-//     maybe_block: Option<rpc_response::Response<RpcBlockUpdate>>,
-//     leader_schedule: &HashMap<Pubkey, HashSet<Slot>>,
-//     block_stats: &mut HashMap<Slot, BlockStats>,
-// ) -> Result<()> {
-//     match maybe_block {
-//         None => {
-//             return Err(PubsubClientError::ConnectionClosed(
-//                 "block subscribe connection closed".to_string(),
-//             )
-//             .into());
-//         }
-//         Some(block_response) => {
-//             for (leader, slots) in leader_schedule {
-//                 if let Some(ref block) = block_response.value.block {
-//                     if slots.contains(&block_response.context.slot) {
-//                         info!(
-//                             "got block from leader slot: {} leader: {}",
-//                             block_response.context.slot, leader
-//                         );
-//                         break;
-//                     }
-//                 }
-//             }
-//         }
-//     }
-//     Ok(())
-// }
+fn print_block_stats(
+    block_stats: &mut HashMap<Slot, BlockStats>,
+    blocks: &mut VecDeque<(Pubkey, Slot, EncodedConfirmedBlock)>,
+) {
+    for (leader, slot, block) in blocks.iter() {
+        // find slots <= this block's slot
+        let bundle_stats: Vec<(&Slot, &BlockStats)> = block_stats
+            .iter()
+            .filter(|(s, _)| **s <= *slot)
+            .map(|(s, b)| (s, b))
+            .collect();
+        let num_bundles_sent_before_during_slot: usize =
+            bundle_stats.iter().map(|(_, b)| b.bundles_sent.len()).sum();
+
+        let versioned_txs: Vec<VersionedTransaction> = block
+            .transactions
+            .iter()
+            .filter_map(|tx| tx.transaction.decode())
+            .collect();
+
+        info!("block stats slot: {}", slot);
+        info!("leader: {:?}", leader);
+        info!("num transactions: {}", versioned_txs.len());
+        info!(
+            "bundles sent before and same slot: {}",
+            num_bundles_sent_before_during_slot
+        );
+    }
+
+    blocks.clear();
+}
 
 async fn run_searcher_loop(
     mut searcher_client: SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
@@ -294,8 +298,10 @@ async fn run_searcher_loop(
     message: String,
     tip_program_pubkey: Pubkey,
 ) -> Result<()> {
+    const BLOCK_OFFSET: u64 = 50;
     let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
+    let mut blocks: VecDeque<(Pubkey, Slot, EncodedConfirmedBlock)> = VecDeque::new();
 
     let mut rng = thread_rng();
 
@@ -324,11 +330,12 @@ async fn run_searcher_loop(
 
     let mut highest_slot = 0;
 
-    let mut tick = interval(Duration::from_secs(2));
+    let mut tick = interval(Duration::from_secs(5));
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash).await?;
+                print_block_stats(&mut block_stats, &mut blocks);
             }
             maybe_pending_tx_notification = pending_tx_stream.next() => {
                 let bundles = build_bundles(maybe_pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message)?;
@@ -354,6 +361,18 @@ async fn run_searcher_loop(
                     Some(SlotUpdate::FirstShredReceived {slot, timestamp: _}) => {
                         debug!("highest slot: {:?}", highest_slot);
                         highest_slot = slot;
+
+                        let block_to_get = highest_slot - BLOCK_OFFSET;
+                        for (leader, slots) in leader_schedule.iter() {
+                            if slots.contains(&block_to_get) {
+                                if let Ok(block) = rpc_client.get_block(block_to_get).await {
+                                    blocks.push_back((*leader, block_to_get, block));
+                                    break;
+                                } else {
+                                    warn!("error getting block {} for leader {}", block_to_get, leader);
+                                }
+                            }
+                        }
                     }
                     Some(_) => {}
                     None => {

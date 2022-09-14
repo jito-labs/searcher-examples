@@ -107,6 +107,7 @@ impl ClientInterceptor {
                 ) {
                     // re-run entire auth workflow is refresh token expiring soon
                     (true, _) => {
+                        // TODO (LB): don't die
                         let (new_access_token, new_refresh_token) =
                             Self::auth(&mut auth_service_client, &keypair, role).await?;
 
@@ -116,6 +117,7 @@ impl ClientInterceptor {
                     }
                     // re-up the access token if it expires soon
                     (_, true) => {
+                        // TODO (LB): don't die
                         let refresh_resp = auth_service_client
                             .refresh_access_token(RefreshAccessTokenRequest {
                                 refresh_token: refresh_token.value.clone(),
