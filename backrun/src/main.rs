@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
 
 use clap::Parser;
@@ -11,14 +12,17 @@ use jito_protos::convert::{proto_packet_from_versioned_tx, versioned_tx_from_pac
 use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
     NextScheduledLeaderRequest, PendingTxNotification, PendingTxSubscriptionRequest,
-    SendBundleRequest, SendBundleResponse, SlotList,
+    SendBundleRequest, SendBundleResponse,
 };
 use log::*;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
 use searcher_service_client::token_authenticator::ClientInterceptor;
 use solana_client::client_error::ClientError;
+use solana_client::nonblocking::pubsub_client::{PubsubClient, PubsubClientError};
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::rpc_response::SlotUpdate;
+use solana_sdk::clock::Slot;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::hash::Hash;
 use solana_sdk::signature::Signer;
@@ -84,10 +88,21 @@ enum BackrunError {
     GrpcError(#[from] Status),
     #[error("RpcError")]
     RpcError(#[from] ClientError),
+    #[error("PubSubError")]
+    PubSubError(#[from] PubsubClientError),
 }
 
-pub struct BundledTransactions {
+#[derive(Clone)]
+struct BundledTransactions {
     versioned_txs: Vec<VersionedTransaction>,
+}
+
+struct BlockStats {
+    slot: Slot,
+    bundles_sent: Vec<(
+        BundledTransactions,
+        result::Result<Response<SendBundleResponse>, Status>,
+    )>,
 }
 
 type Result<T> = result::Result<T, BackrunError>;
@@ -106,6 +121,7 @@ fn build_bundles(
     blockhash: &Hash,
     tip_accounts: &[Pubkey],
     rng: &mut ThreadRng,
+    message: &str,
 ) -> Result<Vec<BundledTransactions>> {
     match maybe_pending_tx_notification {
         Some(Ok(pending_txs)) => {
@@ -121,7 +137,8 @@ fn build_bundles(
                             &[
                                 build_memo(
                                     format!(
-                                        "jito backrun: {:?}",
+                                        "{}: {:?}",
+                                        message,
                                         versioned_tx.signatures[0].to_string()
                                     )
                                     .as_bytes(),
@@ -196,10 +213,10 @@ fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
     ]
 }
 
-async fn perform_tick(
+async fn maintenance_tick(
     searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     rpc_client: &RpcClient,
-    leader_schedule: &mut HashMap<String, SlotList>,
+    leader_schedule: &mut HashMap<Pubkey, HashSet<Slot>>,
     blockhash: &mut Hash,
 ) -> Result<()> {
     *blockhash = rpc_client
@@ -212,7 +229,15 @@ async fn perform_tick(
         .get_connected_leaders(ConnectedLeadersRequest {})
         .await?
         .into_inner()
-        .connected_validators;
+        .connected_validators
+        .iter()
+        .fold(HashMap::new(), |mut hmap, (pubkey, slot_list)| {
+            hmap.insert(
+                Pubkey::from_str(pubkey).unwrap(),
+                slot_list.slots.iter().cloned().collect(),
+            );
+            hmap
+        });
     if new_leader_schedule != *leader_schedule {
         info!("connected_validators: {:?}", new_leader_schedule.keys());
         *leader_schedule = new_leader_schedule;
@@ -231,16 +256,46 @@ async fn perform_tick(
     Ok(())
 }
 
+// async fn update_block_stats(
+//     maybe_block: Option<rpc_response::Response<RpcBlockUpdate>>,
+//     leader_schedule: &HashMap<Pubkey, HashSet<Slot>>,
+//     block_stats: &mut HashMap<Slot, BlockStats>,
+// ) -> Result<()> {
+//     match maybe_block {
+//         None => {
+//             return Err(PubsubClientError::ConnectionClosed(
+//                 "block subscribe connection closed".to_string(),
+//             )
+//             .into());
+//         }
+//         Some(block_response) => {
+//             for (leader, slots) in leader_schedule {
+//                 if let Some(ref block) = block_response.value.block {
+//                     if slots.contains(&block_response.context.slot) {
+//                         info!(
+//                             "got block from leader slot: {} leader: {}",
+//                             block_response.context.slot, leader
+//                         );
+//                         break;
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     Ok(())
+// }
+
 async fn run_searcher_loop(
     mut searcher_client: SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     backrun_pubkey: Pubkey,
     keypair: &Keypair,
-    _pubsub_url: String,
+    pubsub_url: String,
     rpc_url: String,
-    _message: String,
+    message: String,
     tip_program_pubkey: Pubkey,
 ) -> Result<()> {
-    let mut leader_schedule: HashMap<String, SlotList> = HashMap::new();
+    let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
+    let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
 
     let mut rng = thread_rng();
 
@@ -248,7 +303,6 @@ async fn run_searcher_loop(
     info!("tip accounts: {:?}", tip_accounts);
 
     let rpc_client = RpcClient::new(rpc_url);
-
     let mut blockhash = rpc_client
         .get_latest_blockhash_with_commitment(CommitmentConfig {
             commitment: CommitmentLevel::Confirmed,
@@ -263,17 +317,48 @@ async fn run_searcher_loop(
         .await?;
     let mut pending_tx_stream = pending_tx_stream_response.into_inner();
 
+    let pubsub_client = PubsubClient::new(&pubsub_url).await?;
+    info!("subscribing to slot updates");
+    let (mut slot_update_subscription, _unsubscribe_fn) =
+        pubsub_client.slot_updates_subscribe().await?;
+
+    let mut highest_slot = 0;
+
     let mut tick = interval(Duration::from_secs(2));
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                perform_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash).await?;
+                maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash).await?;
             }
             maybe_pending_tx_notification = pending_tx_stream.next() => {
-                let bundles = build_bundles(maybe_pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng)?;
+                let bundles = build_bundles(maybe_pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message)?;
                 if !bundles.is_empty() {
                     let results = send_bundles(&mut searcher_client, &bundles).await?;
-                    info!("sent {} bundles", results.len());
+                    debug!("sent bundles num: {:?}", bundles.len());
+
+                    match block_stats.entry(highest_slot) {
+                        Entry::Occupied(mut entry) => {
+                            entry.get_mut().bundles_sent.extend(bundles.into_iter().zip(results.into_iter()))
+                        }
+                        Entry::Vacant(entry) => {
+                            entry.insert(BlockStats {
+                                slot: highest_slot,
+                                bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
+                            });
+                        }
+                    }
+                }
+            }
+            maybe_slot_update = slot_update_subscription.next() => {
+                match maybe_slot_update {
+                    Some(SlotUpdate::FirstShredReceived {slot, timestamp: _}) => {
+                        debug!("highest slot: {:?}", highest_slot);
+                        highest_slot = slot;
+                    }
+                    Some(_) => {}
+                    None => {
+                        return Err(PubsubClientError::ConnectionClosed("slot update connection closed".to_string()).into());
+                    }
                 }
             }
         }
@@ -315,7 +400,7 @@ fn main() -> Result<()> {
             args.searcher_addr
         );
 
-        run_searcher_loop(
+        let result = run_searcher_loop(
             searcher_client,
             backrun_pubkey,
             &payer_keypair,
@@ -324,7 +409,8 @@ fn main() -> Result<()> {
             args.message,
             tip_program_pubkey,
         )
-        .await?;
+        .await;
+        error!("searcher loop exited result: {:?}", result);
 
         Ok(())
     })
