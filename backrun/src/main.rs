@@ -24,7 +24,7 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter};
 use solana_client::rpc_response;
 use solana_client::rpc_response::{RpcBlockUpdate, SlotUpdate};
-use solana_metrics::{datapoint_debug, datapoint_info, set_host_id};
+use solana_metrics::{datapoint_info, set_host_id};
 use solana_sdk::clock::Slot;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::hash::Hash;
@@ -273,7 +273,7 @@ fn print_block_stats(
     let block = block
         .ok_or_else(|| PubsubClientError::ConnectionClosed("block_subscribe closed".to_string()))?;
 
-    datapoint_debug!("block-received", ("slot", block.context.slot, i64));
+    datapoint_info!("block-received", ("slot", block.context.slot, i64));
 
     let maybe_leader = leader_schedule
         .iter()
@@ -341,18 +341,16 @@ fn print_block_stats(
                     .collect();
 
                 // find the min and max distance from when the bundle was sent to what block it landed in
-                let min_bundle_land_slot = bundles_landed
+                let min_bundle_send_slot = bundles_landed
                     .iter()
                     .map(|(slot, _)| **slot)
                     .min()
                     .unwrap_or(0);
-                let max_bundle_land_slot = bundles_landed
+                let max_bundle_send_slot = bundles_landed
                     .iter()
                     .map(|(slot, _)| **slot)
                     .max()
                     .unwrap_or(0);
-                let max_bundle_distance = block.context.slot - min_bundle_land_slot;
-                let min_bundle_distance = block.context.slot - max_bundle_land_slot;
 
                 datapoint_info!(
                     "leader-bundle-stats",
@@ -372,8 +370,8 @@ fn print_block_stats(
                         num_bundles_sent - bundles_landed.len(),
                         i64
                     ),
-                    ("min_bundle_distance", min_bundle_distance, i64),
-                    ("max_bundle_distance", max_bundle_distance, i64),
+                    ("min_bundle_send_slot", min_bundle_send_slot, i64),
+                    ("max_bundle_send_slot", max_bundle_send_slot, i64),
                 );
 
                 // leaders last slot, clear everything out
@@ -399,7 +397,7 @@ fn print_block_stats(
                     })
                     .sum();
                 if num_mempool_txs_landed > 0 {
-                    datapoint_debug!(
+                    datapoint_info!(
                         "non-leader-bundle-stats",
                         ("slot", block.context.slot, i64),
                         ("mempool_txs_landed", num_mempool_txs_landed, i64),
@@ -514,7 +512,7 @@ async fn run_searcher_loop(
             maybe_slot_update = slot_update_subscription.next() => {
                 match maybe_slot_update {
                     Some(SlotUpdate::FirstShredReceived {slot, timestamp: _}) => {
-                        datapoint_debug!("slot-first-shred-received", ("slot", slot , i64));
+                        datapoint_info!("slot-first-shred-received", ("slot", slot , i64));
                         highest_slot = slot;
                     }
                     Some(_) => {}
