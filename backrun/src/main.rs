@@ -275,6 +275,14 @@ fn print_block_stats(
 
     datapoint_info!("block-received", ("slot", block.context.slot, i64));
 
+    if let Some(stats) = block_stats.get(&block.context.slot) {
+        datapoint_info!(
+            "bundles-sent",
+            ("slot", block.context.slot, i64),
+            ("bundles", stats.bundles_sent.len(), i64)
+        );
+    }
+
     let maybe_leader = leader_schedule
         .iter()
         .find(|(_, slots)| slots.contains(&block.context.slot))
@@ -490,21 +498,14 @@ async fn run_searcher_loop(
                     let results = send_bundles(&mut searcher_client, &bundles).await?;
                     debug!("sent bundles num: {:?}", bundles.len());
 
-                    let mut inserted_new = false;
                     match block_stats.entry(highest_slot) {
                         Entry::Occupied(mut entry) => {
                             entry.get_mut().bundles_sent.extend(bundles.into_iter().zip(results.into_iter()))
                         }
                         Entry::Vacant(entry) => {
-                            inserted_new = true;
                             entry.insert(BlockStats {
                                 bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
                             });
-                        }
-                    }
-                    if inserted_new {
-                        if let Some(stats) = block_stats.get(&(highest_slot - 1)) {
-                            datapoint_info!("bundles-sent", ("slot", highest_slot - 1, i64), ("bundles", stats.bundles_sent.len(), i64));
                         }
                     }
                 }
