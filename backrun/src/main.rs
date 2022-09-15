@@ -2,11 +2,13 @@ mod event_loops;
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
 
 use crate::event_loops::{block_subscribe_loop, pending_tx_loop, slot_subscribe_loop};
 use clap::Parser;
 use env_logger::TimestampPrecision;
+use histogram::Histogram;
 use jito_protos::bundle::Bundle;
 use jito_protos::convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet};
 use jito_protos::searcher::{
@@ -105,11 +107,14 @@ struct BundledTransactions {
     backrun_txs: Vec<VersionedTransaction>,
 }
 
+#[derive(Default)]
 struct BlockStats {
     bundles_sent: Vec<(
         BundledTransactions,
         result::Result<Response<SendBundleResponse>, Status>,
     )>,
+    send_elapsed: u64,
+    send_rt_per_packet: Histogram,
 }
 
 type Result<T> = result::Result<T, BackrunError>;
@@ -128,6 +133,7 @@ fn build_bundles(
         .filter_map(|packet| {
             let mempool_tx = versioned_tx_from_packet(&packet)?;
             let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
+            info!("signature: {:?}", mempool_tx.signatures[0]);
 
             let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
                 &[
@@ -252,7 +258,47 @@ fn print_block_stats(
         datapoint_info!(
             "bundles-sent",
             ("slot", block.context.slot, i64),
-            ("bundles", stats.bundles_sent.len(), i64)
+            ("bundles", stats.bundles_sent.len(), i64),
+            ("total_send_elapsed_us", stats.send_elapsed, i64),
+            (
+                "sent_rt_pp_min",
+                stats.send_rt_per_packet.minimum().unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_min",
+                stats.send_rt_per_packet.maximum().unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_avg",
+                stats.send_rt_per_packet.mean().unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_p50",
+                stats
+                    .send_rt_per_packet
+                    .percentile(50.0)
+                    .unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_p90",
+                stats
+                    .send_rt_per_packet
+                    .percentile(90.0)
+                    .unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_p95",
+                stats
+                    .send_rt_per_packet
+                    .percentile(95.0)
+                    .unwrap_or_default(),
+                i64
+            ),
         );
     }
 
@@ -466,6 +512,7 @@ async fn run_searcher_loop(
         .0;
 
     let mut highest_slot = 0;
+    let mut is_leader_slot = false;
 
     let mut tick = interval(Duration::from_secs(5));
     loop {
@@ -474,26 +521,40 @@ async fn run_searcher_loop(
                 maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash).await?;
             }
             maybe_pending_tx_notification = pending_tx_receiver.recv() => {
-                let pending_tx_notification = maybe_pending_tx_notification.ok_or(BackrunError::Shutdown)?;
-                let bundles = build_bundles(pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message);
-                if !bundles.is_empty() {
-                    let results = send_bundles(&mut searcher_client, &bundles).await?;
-                    debug!("sent bundles num: {:?}", bundles.len());
+                // block engine starts forwarding a few slots early, for super high activity accounts
+                // it might be ideal to wait until the leader slot is up
+                if is_leader_slot {
+                    let pending_tx_notification = maybe_pending_tx_notification.ok_or(BackrunError::Shutdown)?;
+                    let bundles = build_bundles(pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message);
+                    if !bundles.is_empty() {
+                        let now = Instant::now();
+                        let results = send_bundles(&mut searcher_client, &bundles).await?;
+                        let send_elapsed = now.elapsed().as_micros() as u64;
+                        let send_rt_pp_us = send_elapsed / bundles.len() as u64;
 
-                    match block_stats.entry(highest_slot) {
-                        Entry::Occupied(mut entry) => {
-                            entry.get_mut().bundles_sent.extend(bundles.into_iter().zip(results.into_iter()))
-                        }
-                        Entry::Vacant(entry) => {
-                            entry.insert(BlockStats {
-                                bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
-                            });
+                        match block_stats.entry(highest_slot) {
+                            Entry::Occupied(mut entry) => {
+                                let mut stats = entry.get_mut();
+                                stats.bundles_sent.extend(bundles.into_iter().zip(results.into_iter()));
+                                stats.send_elapsed += send_elapsed;
+                                let _ = stats.send_rt_per_packet.increment(send_rt_pp_us);
+                            }
+                            Entry::Vacant(entry) => {
+                                let mut send_rt_per_packet = Histogram::new();
+                                let _ = send_rt_per_packet.increment(send_rt_pp_us);
+                                entry.insert(BlockStats {
+                                    bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
+                                    send_elapsed: send_elapsed,
+                                    send_rt_per_packet
+                                });
+                            }
                         }
                     }
                 }
             }
             maybe_slot = slot_receiver.recv() => {
                 highest_slot = maybe_slot.ok_or(BackrunError::Shutdown)?;
+                is_leader_slot = leader_schedule.iter().any(|(_, slots)| slots.contains(&highest_slot));
             }
             maybe_block = block_receiver.recv() => {
                 let block = maybe_block.ok_or(BackrunError::Shutdown)?;

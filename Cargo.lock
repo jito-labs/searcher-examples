@@ -1444,6 +1444,7 @@ dependencies = [
  "env_logger",
  "futures",
  "futures-util",
+ "histogram",
  "jito-protos",
  "log",
  "prost-types",

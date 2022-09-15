@@ -11,6 +11,7 @@ crossbeam-channel = "0.5.4"
 env_logger = "0.9.0"
 futures = "0.3.21"
 futures-util = "0.3.21"
+histogram = "0.6.9"
 jito-protos = { path = "../jito_protos" }
 log = "0.4.14"
 prost-types = "0.8.0"
