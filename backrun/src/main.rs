@@ -1,29 +1,28 @@
+mod event_loops;
+
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
 
+use crate::event_loops::{block_subscribe_loop, pending_tx_loop, slot_subscribe_loop};
 use clap::Parser;
 use env_logger::TimestampPrecision;
-use futures_util::StreamExt;
-use jito_protos::auth::auth_service_client::AuthServiceClient;
-use jito_protos::auth::Role;
 use jito_protos::bundle::Bundle;
 use jito_protos::convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet};
 use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
-    NextScheduledLeaderRequest, PendingTxNotification, PendingTxSubscriptionRequest,
-    SendBundleRequest, SendBundleResponse,
+    NextScheduledLeaderRequest, PendingTxNotification, SendBundleRequest, SendBundleResponse,
 };
 use log::*;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
 use searcher_service_client::token_authenticator::ClientInterceptor;
+use searcher_service_client::{get_searcher_client, BlockEngineConnectionError};
 use solana_client::client_error::ClientError;
-use solana_client::nonblocking::pubsub_client::{PubsubClient, PubsubClientError};
+use solana_client::nonblocking::pubsub_client::PubsubClientError;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter};
 use solana_client::rpc_response;
-use solana_client::rpc_response::{RpcBlockUpdate, SlotUpdate};
+use solana_client::rpc_response::RpcBlockUpdate;
 use solana_metrics::{datapoint_info, set_host_id};
 use solana_sdk::clock::Slot;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
@@ -36,13 +35,13 @@ use solana_sdk::{
     pubkey::Pubkey,
     signature::{read_keypair_file, Keypair},
 };
-use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use spl_memo::build_memo;
 use thiserror::Error;
+use tokio::sync::mpsc::{channel, Receiver};
 use tokio::{runtime::Builder, time::interval};
 use tonic::codegen::InterceptedService;
 use tonic::transport::Channel;
-use tonic::{transport::Endpoint, Response, Status};
+use tonic::{Response, Status};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -86,14 +85,18 @@ struct Args {
 
 #[derive(Debug, Error)]
 enum BackrunError {
-    #[error("TonicError")]
+    #[error("TonicError {0}")]
     TonicError(#[from] tonic::transport::Error),
-    #[error("GrpcError")]
+    #[error("GrpcError {0}")]
     GrpcError(#[from] Status),
-    #[error("RpcError")]
+    #[error("RpcError {0}")]
     RpcError(#[from] ClientError),
-    #[error("PubSubError")]
+    #[error("PubSubError {0}")]
     PubSubError(#[from] PubsubClientError),
+    #[error("BlockEngineConnectionError {0}")]
+    BlockEngineConnectionError(#[from] BlockEngineConnectionError),
+    #[error("Shutdown")]
+    Shutdown,
 }
 
 #[derive(Clone)]
@@ -111,65 +114,40 @@ struct BlockStats {
 
 type Result<T> = result::Result<T, BackrunError>;
 
-async fn create_grpc_channel(url: &str) -> Result<Channel> {
-    let mut endpoint = Endpoint::from_shared(url.to_string()).expect("invalid url");
-    if url.contains("https") {
-        endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new())?;
-    }
-    Ok(endpoint.connect().await?)
-}
-
 fn build_bundles(
-    maybe_pending_tx_notification: Option<result::Result<PendingTxNotification, Status>>,
+    pending_tx_notification: PendingTxNotification,
     keypair: &Keypair,
     blockhash: &Hash,
     tip_accounts: &[Pubkey],
     rng: &mut ThreadRng,
     message: &str,
-) -> Result<Vec<BundledTransactions>> {
-    match maybe_pending_tx_notification {
-        Some(Ok(pending_txs)) => {
-            let bundles: Vec<BundledTransactions> = pending_txs
-                .transactions
-                .into_iter()
-                .filter_map(|packet| {
-                    let mempool_tx = versioned_tx_from_packet(&packet)?;
-                    let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
+) -> Vec<BundledTransactions> {
+    pending_tx_notification
+        .transactions
+        .into_iter()
+        .filter_map(|packet| {
+            let mempool_tx = versioned_tx_from_packet(&packet)?;
+            let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
 
-                    let backrun_tx =
-                        VersionedTransaction::from(Transaction::new_signed_with_payer(
-                            &[
-                                build_memo(
-                                    format!(
-                                        "{}: {:?}",
-                                        message,
-                                        mempool_tx.signatures[0].to_string()
-                                    )
-                                    .as_bytes(),
-                                    &[],
-                                ),
-                                transfer(&keypair.pubkey(), &tip_account, 1),
-                            ],
-                            Some(&keypair.pubkey()),
-                            &[keypair],
-                            blockhash.clone(),
-                        ));
-                    Some(BundledTransactions {
-                        mempool_txs: vec![mempool_tx],
-                        backrun_txs: vec![backrun_tx],
-                    })
-                })
-                .collect();
-
-            Ok(bundles)
-        }
-        Some(Err(e)) => {
-            return Err(e.into());
-        }
-        None => {
-            return Err(Status::unavailable("unavailable").into());
-        }
-    }
+            let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+                &[
+                    build_memo(
+                        format!("{}: {:?}", message, mempool_tx.signatures[0].to_string())
+                            .as_bytes(),
+                        &[],
+                    ),
+                    transfer(&keypair.pubkey(), &tip_account, 1),
+                ],
+                Some(&keypair.pubkey()),
+                &[keypair],
+                blockhash.clone(),
+            ));
+            Some(BundledTransactions {
+                mempool_txs: vec![mempool_tx],
+                backrun_txs: vec![backrun_tx],
+            })
+        })
+        .collect()
 }
 
 async fn send_bundles(
@@ -264,16 +242,11 @@ async fn maintenance_tick(
 
 fn print_block_stats(
     block_stats: &mut HashMap<Slot, BlockStats>,
-    block: Option<rpc_response::Response<RpcBlockUpdate>>,
+    block: rpc_response::Response<RpcBlockUpdate>,
     leader_schedule: &HashMap<Pubkey, HashSet<Slot>>,
     block_signatures: &mut HashMap<Slot, HashSet<Signature>>,
-) -> Result<()> {
+) {
     const KEEP_SIGS_SLOTS: u64 = 20;
-
-    let block = block
-        .ok_or_else(|| PubsubClientError::ConnectionClosed("block_subscribe closed".to_string()))?;
-
-    datapoint_info!("block-received", ("slot", block.context.slot, i64));
 
     if let Some(stats) = block_stats.get(&block.context.slot) {
         datapoint_info!(
@@ -428,22 +401,26 @@ fn print_block_stats(
 
     // throw away signatures for slots > KEEP_SIGS_SLOTS old
     block_signatures.retain(|slot, _| *slot > block.context.slot - KEEP_SIGS_SLOTS);
-
-    Ok(())
 }
 
 async fn run_searcher_loop(
-    mut searcher_client: SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
-    backrun_pubkey: Pubkey,
+    auth_addr: String,
+    searcher_addr: String,
+    auth_keypair: Arc<Keypair>,
     keypair: &Keypair,
-    pubsub_url: String,
     rpc_url: String,
     message: String,
     tip_program_pubkey: Pubkey,
+    mut slot_receiver: Receiver<Slot>,
+    mut block_receiver: Receiver<rpc_response::Response<RpcBlockUpdate>>,
+    mut pending_tx_receiver: Receiver<PendingTxNotification>,
 ) -> Result<()> {
     let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
     let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
+
+    let mut searcher_client =
+        get_searcher_client(&auth_addr, &searcher_addr, &auth_keypair).await?;
 
     let mut rng = thread_rng();
 
@@ -458,32 +435,6 @@ async fn run_searcher_loop(
         .await?
         .0;
 
-    let pending_tx_stream_response = searcher_client
-        .subscribe_pending_transactions(PendingTxSubscriptionRequest {
-            accounts: vec![backrun_pubkey.to_string()],
-        })
-        .await?;
-    let mut pending_tx_stream = pending_tx_stream_response.into_inner();
-
-    let pubsub_client = PubsubClient::new(&pubsub_url).await?;
-    let (mut slot_update_subscription, _unsubscribe_fn) =
-        pubsub_client.slot_updates_subscribe().await?;
-
-    let (mut block_update_subscription, _unsubscribe_fn) = pubsub_client
-        .block_subscribe(
-            RpcBlockSubscribeFilter::All,
-            Some(RpcBlockSubscribeConfig {
-                commitment: Some(CommitmentConfig {
-                    commitment: CommitmentLevel::Confirmed,
-                }),
-                encoding: Some(UiTransactionEncoding::Base64),
-                transaction_details: Some(TransactionDetails::Signatures),
-                show_rewards: Some(true),
-                max_supported_transaction_version: None,
-            }),
-        )
-        .await?;
-
     let mut highest_slot = 0;
 
     let mut tick = interval(Duration::from_secs(5));
@@ -492,8 +443,9 @@ async fn run_searcher_loop(
             _ = tick.tick() => {
                 maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash).await?;
             }
-            maybe_pending_tx_notification = pending_tx_stream.next() => {
-                let bundles = build_bundles(maybe_pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message)?;
+            maybe_pending_tx_notification = pending_tx_receiver.recv() => {
+                let pending_tx_notification = maybe_pending_tx_notification.ok_or(BackrunError::Shutdown)?;
+                let bundles = build_bundles(pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message);
                 if !bundles.is_empty() {
                     let results = send_bundles(&mut searcher_client, &bundles).await?;
                     debug!("sent bundles num: {:?}", bundles.len());
@@ -510,20 +462,12 @@ async fn run_searcher_loop(
                     }
                 }
             }
-            maybe_slot_update = slot_update_subscription.next() => {
-                match maybe_slot_update {
-                    Some(SlotUpdate::FirstShredReceived {slot, timestamp: _}) => {
-                        datapoint_info!("slot-first-shred-received", ("slot", slot , i64));
-                        highest_slot = slot;
-                    }
-                    Some(_) => {}
-                    None => {
-                        return Err(PubsubClientError::ConnectionClosed("slot update connection closed".to_string()).into());
-                    }
-                }
+            maybe_slot = slot_receiver.recv() => {
+                highest_slot = maybe_slot.ok_or(BackrunError::Shutdown)?;
             }
-            maybe_block = block_update_subscription.next() => {
-                print_block_stats(&mut block_stats, maybe_block, &leader_schedule, &mut block_signatures)?;
+            maybe_block = block_receiver.recv() => {
+                let block = maybe_block.ok_or(BackrunError::Shutdown)?;
+                print_block_stats(&mut block_stats, block, &leader_schedule, &mut block_signatures);
             }
         }
     }
@@ -547,34 +491,31 @@ fn main() -> Result<()> {
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
     runtime.block_on(async move {
-        let auth_channel = create_grpc_channel(&args.auth_addr).await?;
-        let client_interceptor = ClientInterceptor::new(
-            AuthServiceClient::new(auth_channel),
-            &auth_keypair,
-            Role::Searcher,
-        )
-        .await?;
-        info!(
-            "authenticated against block engine url: {:?}",
-            args.auth_addr
-        );
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (pending_tx_sender, pending_tx_receiver) = channel(100);
 
-        let searcher_channel = create_grpc_channel(&args.searcher_addr).await?;
-        let searcher_client =
-            SearcherServiceClient::with_interceptor(searcher_channel, client_interceptor);
-        info!(
-            "connected to searcher service url: {:?}",
-            args.searcher_addr
-        );
+        tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        tokio::spawn(pending_tx_loop(
+            args.auth_addr.clone(),
+            args.searcher_addr.clone(),
+            auth_keypair.clone(),
+            pending_tx_sender,
+            backrun_pubkey,
+        ));
 
         let result = run_searcher_loop(
-            searcher_client,
-            backrun_pubkey,
+            args.auth_addr,
+            args.searcher_addr,
+            auth_keypair,
             &payer_keypair,
-            args.pubsub_url,
             args.rpc_url,
             args.message,
             tip_program_pubkey,
+            slot_receiver,
+            block_receiver,
+            pending_tx_receiver,
         )
         .await;
         error!("searcher loop exited result: {:?}", result);

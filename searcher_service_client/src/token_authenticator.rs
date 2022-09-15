@@ -1,7 +1,8 @@
 use std::sync::RwLock;
 use std::time::SystemTime;
-use std::{result, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
+use crate::BlockEngineConnectionResult;
 use jito_protos::auth::{
     auth_service_client::AuthServiceClient, GenerateAuthChallengeRequest,
     GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
@@ -14,8 +15,6 @@ use tonic::{service::Interceptor, transport::Channel, Request, Status};
 
 const AUTHORIZATION_HEADER: &str = "authorization";
 const BEARER: &str = "Bearer ";
-
-type Result<T> = result::Result<T, Status>;
 
 /// Adds the token to each requests' authorization header.
 /// Manages refreshing the token in a separate thread.
@@ -30,7 +29,7 @@ impl ClientInterceptor {
         mut auth_service_client: AuthServiceClient<Channel>,
         keypair: &Arc<Keypair>,
         role: Role,
-    ) -> Result<Self> {
+    ) -> BlockEngineConnectionResult<Self> {
         let (access_token, refresh_token) =
             Self::auth(&mut auth_service_client, keypair, role).await?;
 
@@ -52,7 +51,7 @@ impl ClientInterceptor {
         auth_service_client: &mut AuthServiceClient<Channel>,
         keypair: &Keypair,
         role: Role,
-    ) -> Result<(Token, Token)> {
+    ) -> BlockEngineConnectionResult<(Token, Token)> {
         let challenge_resp = auth_service_client
             .generate_auth_challenge(GenerateAuthChallengeRequest {
                 role: role as i32,
@@ -82,7 +81,7 @@ impl ClientInterceptor {
         access_token_expiration: Timestamp,
         keypair: Arc<Keypair>,
         role: Role,
-    ) -> JoinHandle<Result<()>> {
+    ) -> JoinHandle<BlockEngineConnectionResult<()>> {
         tokio::spawn(async move {
             let mut refresh_token = refresh_token;
             let mut access_token_expiration = access_token_expiration;
@@ -152,7 +151,7 @@ impl ClientInterceptor {
 }
 
 impl Interceptor for ClientInterceptor {
-    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>> {
+    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
         let l_token = self.bearer_token.read().unwrap();
         if !l_token.is_empty() {
             request.metadata_mut().insert(
