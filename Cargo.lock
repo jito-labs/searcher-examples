@@ -1450,6 +1450,7 @@ dependencies = [
  "rand 0.8.5",
  "searcher-service-client",
  "solana-client",
+ "solana-metrics",
  "solana-sdk",
  "solana-transaction-status",
  "spl-memo",

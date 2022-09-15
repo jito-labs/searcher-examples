@@ -17,6 +17,7 @@ prost-types = "0.8.0"
 rand = "0.8.5"
 searcher-service-client = { path = "../searcher_service_client" }
 solana-client = "=1.11.2"
+solana-metrics = "=1.11.2"
 solana-sdk = "=1.11.2"
 solana-transaction-status = "=1.11.2"
 spl-memo = "3.0.1"

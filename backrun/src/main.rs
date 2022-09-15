@@ -24,6 +24,7 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter};
 use solana_client::rpc_response;
 use solana_client::rpc_response::{RpcBlockUpdate, SlotUpdate};
+use solana_metrics::{datapoint_debug, datapoint_info, set_host_id};
 use solana_sdk::clock::Slot;
 use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_sdk::hash::Hash;
@@ -279,9 +280,6 @@ fn print_block_stats(
         .map(|(leader, _)| leader);
 
     if let Some(leader) = maybe_leader {
-        info!("block stats: {}", block.context.slot);
-        info!(" leader: {}", leader);
-
         if let Some(b) = &block.value.block {
             if let Some(sigs) = &b.signatures {
                 let signatures_this_block: HashSet<Signature> = sigs
@@ -355,22 +353,29 @@ fn print_block_stats(
                 let max_bundle_distance = block.context.slot - min_bundle_land_slot;
                 let min_bundle_distance = block.context.slot - max_bundle_land_slot;
 
-                info!(" txs: {}", signatures_this_block.len());
-                info!(" num_bundles_sent: {}", num_bundles_sent);
-                info!(" num_bundles_sent_ok: {}", num_bundles_sent_ok);
-                info!(
-                    " num_bundles_sent_err: {}",
-                    num_bundles_sent - num_bundles_sent_ok
+                datapoint_info!(
+                    "leader-bundle-stats",
+                    ("slot", block.context.slot, i64),
+                    ("leader", leader.to_string(), String),
+                    ("block_txs", signatures_this_block.len(), i64),
+                    ("num_bundles_sent", num_bundles_sent, i64),
+                    ("num_bundles_sent_ok", num_bundles_sent_ok, i64),
+                    (
+                        "num_bundles_sent_err",
+                        num_bundles_sent - num_bundles_sent_ok,
+                        i64
+                    ),
+                    ("num_bundles_landed", bundles_landed.len(), i64),
+                    (
+                        "num_bundles_dropped",
+                        num_bundles_sent - bundles_landed.len(),
+                        i64
+                    ),
+                    ("min_bundle_distance", min_bundle_distance, i64),
+                    ("max_bundle_distance", max_bundle_distance, i64),
                 );
-                info!(" num_bundles_landed: {}", bundles_landed.len());
-                info!(
-                    " num_bundles_dropped: {}",
-                    num_bundles_sent - bundles_landed.len()
-                );
-                info!("min_bundle_distance: {}", min_bundle_distance);
-                info!("max_bundle_distance: {}", max_bundle_distance);
             } else {
-                info!("missing signatures");
+                info!(" missing signatures");
             }
         } else {
             info!(" txs: 0");
@@ -435,7 +440,6 @@ async fn run_searcher_loop(
     let mut pending_tx_stream = pending_tx_stream_response.into_inner();
 
     let pubsub_client = PubsubClient::new(&pubsub_url).await?;
-    info!("subscribing to slot updates");
     let (mut slot_update_subscription, _unsubscribe_fn) =
         pubsub_client.slot_updates_subscribe().await?;
 
@@ -483,7 +487,7 @@ async fn run_searcher_loop(
                     }
                     if inserted_new {
                         if let Some(stats) = block_stats.get(&(highest_slot - 1)) {
-                            info!("send bundle stats slot: {} bundles: {}", highest_slot - 1, stats.bundles_sent.len());
+                            datapoint_info!("bundles-sent", ("slot", highest_slot - 1, i64), ("bundles", stats.bundles_sent.len(), i64));
                         }
                     }
                 }
@@ -491,7 +495,7 @@ async fn run_searcher_loop(
             maybe_slot_update = slot_update_subscription.next() => {
                 match maybe_slot_update {
                     Some(SlotUpdate::FirstShredReceived {slot, timestamp: _}) => {
-                        debug!("highest slot: {:?}", highest_slot);
+                        datapoint_debug!("slot-first-shred-received", ("slot", slot , i64));
                         highest_slot = slot;
                     }
                     Some(_) => {}
@@ -517,6 +521,9 @@ fn main() -> Result<()> {
         Arc::new(read_keypair_file(Path::new(&args.payer_keypair)).expect("parse kp file"));
     let auth_keypair =
         Arc::new(read_keypair_file(Path::new(&args.payer_keypair)).expect("parse kp file"));
+
+    set_host_id(auth_keypair.pubkey().to_string());
+
     let backrun_pubkey = Pubkey::from_str(&args.backrun_account).unwrap();
     let tip_program_pubkey = Pubkey::from_str(&args.tip_program_id).unwrap();
 
