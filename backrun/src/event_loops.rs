@@ -1,5 +1,6 @@
 use futures_util::StreamExt;
 use jito_protos::searcher::{PendingTxNotification, PendingTxSubscriptionRequest};
+use log::info;
 use searcher_service_client::get_searcher_client;
 use solana_client::nonblocking::pubsub_client::PubsubClient;
 use solana_client::rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter};
@@ -144,12 +145,14 @@ pub async fn pending_tx_loop(
     searcher_addr: String,
     auth_keypair: Arc<Keypair>,
     pending_tx_sender: Sender<PendingTxNotification>,
-    backrun_pubkey: Pubkey,
+    backrun_pubkeys: Vec<Pubkey>,
 ) {
     let mut num_searcher_connection_errors: usize = 0;
     let mut num_pending_tx_sub_errors: usize = 0;
     let mut num_pending_tx_stream_errors: usize = 0;
     let mut num_pending_tx_stream_disconnects: usize = 0;
+
+    info!("backrun pubkeys: {:?}", backrun_pubkeys);
 
     loop {
         sleep(Duration::from_secs(1)).await;
@@ -158,7 +161,7 @@ pub async fn pending_tx_loop(
             Ok(mut searcher_client) => {
                 match searcher_client
                     .subscribe_pending_transactions(PendingTxSubscriptionRequest {
-                        accounts: vec![backrun_pubkey.to_string()],
+                        accounts: backrun_pubkeys.iter().map(|p| p.to_string()).collect(),
                     })
                     .await
                 {

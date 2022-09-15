@@ -54,9 +54,9 @@ struct Args {
     #[clap(long, env)]
     searcher_addr: String,
 
-    /// Account to backrun
+    /// Accounts to backrun
     #[clap(long, env)]
-    backrun_account: String,
+    backrun_accounts: Vec<String>,
 
     /// Path to keypair file used to sign and pay for transactions
     #[clap(long, env)]
@@ -486,7 +486,11 @@ fn main() -> Result<()> {
 
     set_host_id(auth_keypair.pubkey().to_string());
 
-    let backrun_pubkey = Pubkey::from_str(&args.backrun_account).unwrap();
+    let backrun_pubkeys: Vec<Pubkey> = args
+        .backrun_accounts
+        .iter()
+        .map(|a| Pubkey::from_str(a).unwrap())
+        .collect();
     let tip_program_pubkey = Pubkey::from_str(&args.tip_program_id).unwrap();
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
@@ -502,7 +506,7 @@ fn main() -> Result<()> {
             args.searcher_addr.clone(),
             auth_keypair.clone(),
             pending_tx_sender,
-            backrun_pubkey,
+            backrun_pubkeys,
         ));
 
         let result = run_searcher_loop(
