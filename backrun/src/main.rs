@@ -321,6 +321,31 @@ fn print_block_stats(
                     })
                     .collect();
 
+                let mempool_txs_landed_no_bundle: Vec<(&Slot, &BundledTransactions)> =
+                    bundles_sent_before_slot
+                        .iter()
+                        .flat_map(|(slot, bundles_sent_slot)| {
+                            bundles_sent_slot
+                                .iter()
+                                .filter(|(_, send_response)| send_response.is_ok())
+                                .filter_map(|(bundle_sent, _)| {
+                                    if bundle_sent
+                                        .mempool_txs
+                                        .iter()
+                                        .any(|tx| block_signatures.contains(&tx.signatures[0]))
+                                        && !bundle_sent
+                                            .backrun_txs
+                                            .iter()
+                                            .any(|tx| block_signatures.contains(&tx.signatures[0]))
+                                    {
+                                        Some((*slot, bundle_sent))
+                                    } else {
+                                        None
+                                    }
+                                })
+                        })
+                        .collect();
+
                 // find the min and max distance from when the bundle was sent to what block it landed in
                 let min_bundle_send_slot = bundles_landed
                     .iter()
@@ -353,6 +378,11 @@ fn print_block_stats(
                     ),
                     ("min_bundle_send_slot", min_bundle_send_slot, i64),
                     ("max_bundle_send_slot", max_bundle_send_slot, i64),
+                    (
+                        "mempool_txs_landed_no_bundle",
+                        mempool_txs_landed_no_bundle.len(),
+                        i64
+                    ),
                 );
 
                 // leaders last slot, clear everything out
