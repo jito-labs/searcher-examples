@@ -1,47 +1,49 @@
-use std::{
-    collections::{HashSet, VecDeque},
-    path::Path,
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
-};
+mod event_loops;
 
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
+
+use crate::event_loops::{block_subscribe_loop, pending_tx_loop, slot_subscribe_loop};
 use clap::Parser;
-use futures_util::StreamExt;
-use jito_protos::auth::auth_service_client::AuthServiceClient;
-use jito_protos::auth::Role;
-use jito_protos::{
-    bundle::Bundle,
-    convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet},
-    searcher::{
-        searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
-        NextScheduledLeaderRequest, PendingTxNotification, PendingTxSubscriptionRequest,
-        SendBundleRequest,
-    },
-    shared::Header,
+use env_logger::TimestampPrecision;
+use histogram::Histogram;
+use jito_protos::bundle::Bundle;
+use jito_protos::convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet};
+use jito_protos::searcher::{
+    searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
+    NextScheduledLeaderRequest, PendingTxNotification, SendBundleRequest, SendBundleResponse,
 };
 use log::*;
-use prost_types::Timestamp;
+use rand::rngs::ThreadRng;
+use rand::{thread_rng, Rng};
 use searcher_service_client::token_authenticator::ClientInterceptor;
-use solana_client::{
-    nonblocking::pubsub_client::PubsubClient,
-    rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
-    rpc_response::{Response, RpcBlockUpdate},
-};
+use searcher_service_client::{get_searcher_client, BlockEngineConnectionError};
+use solana_client::client_error::ClientError;
+use solana_client::nonblocking::pubsub_client::PubsubClientError;
+use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_client::rpc_response;
+use solana_client::rpc_response::RpcBlockUpdate;
+use solana_metrics::{datapoint_info, set_host_id};
+use solana_sdk::clock::Slot;
+use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
+use solana_sdk::hash::Hash;
+use solana_sdk::signature::{Signature, Signer};
+use solana_sdk::system_instruction::transfer;
+use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::VersionedTransaction;
 use solana_sdk::{
-    clock::Slot,
-    commitment_config::{CommitmentConfig, CommitmentLevel},
-    hash::Hash,
     pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair, Signer},
-    transaction::{Transaction, VersionedTransaction},
+    signature::{read_keypair_file, Keypair},
 };
-use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use spl_memo::build_memo;
+use thiserror::Error;
+use tokio::sync::mpsc::{channel, Receiver};
 use tokio::{runtime::Builder, time::interval};
 use tonic::codegen::InterceptedService;
 use tonic::transport::Channel;
-use tonic::{transport::Endpoint, Status};
+use tonic::{Response, Status};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -54,277 +56,564 @@ struct Args {
     #[clap(long, env)]
     searcher_addr: String,
 
-    /// Backrun account defaults to pyth oracle on testnet
-    #[clap(long, env, default_value_t = String::from("8tfDNiaEyrV6Q1U4DEXrEigs9DoDtkugzFbybENEbCDz"))]
-    backrun_account: String,
-
-    /// Path to Keypair file
+    /// Accounts to backrun
     #[clap(long, env)]
-    keypair_file: String,
+    backrun_accounts: Vec<String>,
 
-    /// Pubsub URL
+    /// Path to keypair file used to sign and pay for transactions
+    #[clap(long, env)]
+    payer_keypair: String,
+
+    /// Path to keypair file used to authenticate with the backend
+    #[clap(long, env)]
+    auth_keypair: String,
+
+    /// Pubsub URL. Note that this RPC server must have --rpc-pubsub-enable-block-subscription enabled
     #[clap(long, env)]
     pubsub_url: String,
+
+    /// RPC URL to get block hashes from
+    #[clap(long, env)]
+    rpc_url: String,
+
+    /// Memo program message
+    #[clap(long, env, default_value_t = String::from("jito backrun"))]
+    message: String,
+
+    /// Tip program public key
+    #[clap(long, env)]
+    tip_program_id: String,
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
-struct BackrunResponse {
-    bundle: SendBundleRequest,
-    tx: VersionedTransaction,
-    backrun_tx: VersionedTransaction,
-    uuid: String,
-    time_sent: Instant,
+#[derive(Debug, Error)]
+enum BackrunError {
+    #[error("TonicError {0}")]
+    TonicError(#[from] tonic::transport::Error),
+    #[error("GrpcError {0}")]
+    GrpcError(#[from] Status),
+    #[error("RpcError {0}")]
+    RpcError(#[from] ClientError),
+    #[error("PubSubError {0}")]
+    PubSubError(#[from] PubsubClientError),
+    #[error("BlockEngineConnectionError {0}")]
+    BlockEngineConnectionError(#[from] BlockEngineConnectionError),
+    #[error("Shutdown")]
+    Shutdown,
 }
 
-#[derive(Debug)]
-#[allow(dead_code)] // just for debug
-struct BackrunStats {
-    slot: Slot,
-    num_expired: usize,
-    num_tx_beat_ours: usize,
-    num_successful_bundles: usize,
-    num_pending: usize,
+#[derive(Clone)]
+struct BundledTransactions {
+    mempool_txs: Vec<VersionedTransaction>,
+    backrun_txs: Vec<VersionedTransaction>,
 }
-#[allow(clippy::await_holding_lock)]
-fn main() {
-    env_logger::init();
-    let args: Args = Args::parse();
 
-    let kp = Arc::new(read_keypair_file(Path::new(&args.keypair_file)).expect("parse kp file"));
-    let pubkey = Pubkey::from_str(&args.backrun_account).unwrap();
-    let searcher_url = args.searcher_addr;
-    let pubsub_url = args.pubsub_url;
+#[derive(Default)]
+struct BlockStats {
+    bundles_sent: Vec<(
+        BundledTransactions,
+        result::Result<Response<SendBundleResponse>, Status>,
+    )>,
+    send_elapsed: u64,
+    send_rt_per_packet: Histogram,
+}
 
-    let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-    let mut endpoint = Endpoint::from_shared(searcher_url.clone()).expect("invalid searcher url");
-    if searcher_url.contains("https") {
-        endpoint = endpoint
-            .tls_config(tonic::transport::ClientTlsConfig::new())
-            .expect("failed to set tls_config");
-    }
-    let grpc_channel = runtime.block_on(async move {
-        endpoint
-            .connect()
-            .await
-            .expect("searcher service connection failed")
-    });
-    let interceptor_kp = kp.clone();
-    let interceptor = runtime.block_on(async move {
-        info!("trying to auth {}", args.auth_addr);
-        let mut endpoint = Endpoint::from_shared(args.auth_addr.clone()).expect("invalid auth url");
-        if args.auth_addr.contains("https") {
-            endpoint = endpoint
-                .tls_config(tonic::transport::ClientTlsConfig::new())
-                .expect("failed to set tls_config");
-        }
-        let channel = endpoint
-            .connect()
-            .await
-            .expect("failed to connect to auth service");
-        let auth_client = AuthServiceClient::new(channel);
-        info!("connected to auth {}", args.auth_addr);
-        ClientInterceptor::new(auth_client, interceptor_kp, Role::Searcher)
-    });
+type Result<T> = result::Result<T, BackrunError>;
 
-    let mut searcher_client = SearcherServiceClient::with_interceptor(grpc_channel, interceptor);
+fn build_bundles(
+    pending_tx_notification: PendingTxNotification,
+    keypair: &Keypair,
+    blockhash: &Hash,
+    tip_accounts: &[Pubkey],
+    rng: &mut ThreadRng,
+    message: &str,
+) -> Vec<BundledTransactions> {
+    pending_tx_notification
+        .transactions
+        .into_iter()
+        .filter_map(|packet| {
+            let mempool_tx = versioned_tx_from_packet(&packet)?;
+            let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
 
-    let mut valid_blockhashes: VecDeque<Hash> = VecDeque::new();
-    let mut connected_leader_slots: HashSet<Slot> = HashSet::new();
-    let mut backruns = Vec::new();
-    runtime.block_on(async move {
-        let response = searcher_client
-            .subscribe_pending_transactions(PendingTxSubscriptionRequest {
-                accounts: vec![pubkey.to_string()],
+            let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+                &[
+                    build_memo(
+                        format!("{}: {:?}", message, mempool_tx.signatures[0].to_string())
+                            .as_bytes(),
+                        &[],
+                    ),
+                    transfer(&keypair.pubkey(), &tip_account, 1),
+                ],
+                Some(&keypair.pubkey()),
+                &[keypair],
+                blockhash.clone(),
+            ));
+            Some(BundledTransactions {
+                mempool_txs: vec![mempool_tx],
+                backrun_txs: vec![backrun_tx],
             })
-            .await
-            .expect("subscribe to pending transactions");
-        let mut pending_tx_stream = response.into_inner();
-        info!("Happy searching :)");
-          let mut tick = interval(Duration::from_secs(5));
-              let pubsub_client = PubsubClient::new(&pubsub_url).await.expect("subscribing to pubsub client");
-              let (mut block_notifications, _block_unsubscribe) =
-                  pubsub_client.block_subscribe(
-                      RpcBlockSubscribeFilter::All,
-                      Some(RpcBlockSubscribeConfig {
-                          commitment: Some(CommitmentConfig { commitment: CommitmentLevel::Confirmed }),
-                          encoding: Some(UiTransactionEncoding::Base64),
-                          transaction_details: Some(TransactionDetails::Signatures),
-                          show_rewards: Some(false),
-                          max_supported_transaction_version: Some(0),
-                      })).await.expect("block subscribing");
-              info!("subscribed to pending transactions");
-              loop {
-                  tokio::select! {
-                      maybe_pending_tx_notification = pending_tx_stream.message() => {
-                          let transactions_of_interest = get_transactions_of_interest(maybe_pending_tx_notification, &pubkey, &valid_blockhashes).expect("gets transactions");
-                           if !transactions_of_interest.is_empty() {
-                               let new_backruns = backrun_transaction(transactions_of_interest, &mut searcher_client, &valid_blockhashes, &kp).await.expect("sends bundles");
-                               backruns.extend(new_backruns);
-                           }
-                      }
-                      maybe_block = block_notifications.next() => {
-                          let backrun_stats = update_block_stats(maybe_block, &mut valid_blockhashes, &mut backruns);
-                          if connected_leader_slots.contains(&backrun_stats.slot) {
-                              info!("backrun_stats: {:?}", backrun_stats);
-                          }
-                      }
-                      _ = tick.tick() => {
-                          let next_leader_info = searcher_client.get_next_scheduled_leader(NextScheduledLeaderRequest{}).await.expect("gets next slot").into_inner();
-                          let slots_until_next = next_leader_info.next_leader_slot - next_leader_info.current_slot;
-                          info!("next leader slot in {:?} slots, pubkey: {:?}", slots_until_next, next_leader_info.next_leader_identity);
-
-                          let leader_schedule = searcher_client.get_connected_leaders(ConnectedLeadersRequest{}).await.expect("get connected leaders").into_inner();
-                          connected_leader_slots = leader_schedule.connected_validators.values().fold(HashSet::new(), |mut set, slot_list| {
-                              set.extend(slot_list.slots.clone());
-                              set
-                          });
-                      }
-                  }
-              }
-          });
+        })
+        .collect()
 }
 
-fn update_block_stats(
-    maybe_block: Option<Response<RpcBlockUpdate>>,
-    valid_blockhashes: &mut VecDeque<Hash>,
-    backruns: &mut Vec<BackrunResponse>,
-) -> BackrunStats {
-    let mut tx_beat_ours = 0;
-    let mut successful_bundles = 0;
-    let mut slot = 0;
-    if let Some(response) = maybe_block {
-        slot = response.context.slot;
+async fn send_bundles(
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+    bundles: &[BundledTransactions],
+) -> Result<Vec<result::Result<Response<SendBundleResponse>, Status>>> {
+    let mut futs = vec![];
+    for b in bundles {
+        let mut searcher_client = searcher_client.clone();
+        let packets = b
+            .mempool_txs
+            .iter()
+            .map(proto_packet_from_versioned_tx)
+            .chain(b.backrun_txs.iter().map(proto_packet_from_versioned_tx))
+            .collect();
 
-        if let Some(block) = response.value.block {
-            valid_blockhashes.push_front(Hash::from_str(&block.blockhash).unwrap());
-            if valid_blockhashes.len() > 100 {
-                valid_blockhashes.pop_back();
-            }
+        let task = tokio::spawn(async move {
+            searcher_client
+                .send_bundle(SendBundleRequest {
+                    bundle: Some(Bundle {
+                        header: None,
+                        packets,
+                    }),
+                })
+                .await
+        });
+        futs.push(task);
+    }
 
-            if let Some(signatures) = block.signatures {
-                for backrun in backruns.iter() {
-                    let is_tx_present = signatures.contains(&backrun.tx.signatures[0].to_string());
-                    let is_backrun_present =
-                        signatures.contains(&backrun.backrun_tx.signatures[0].to_string());
-                    match (is_backrun_present, is_tx_present) {
-                        (false, true) => {
-                            tx_beat_ours += 1;
-                        }
-                        (true, true) => {
-                            successful_bundles += 1;
-                        }
-                        _ => {}
-                    }
+    let responses = futures::future::join_all(futs).await;
+    let send_bundle_responses = responses.into_iter().map(|r| r.unwrap()).collect();
+    Ok(send_bundle_responses)
+}
+
+fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
+    let tip_pda_0 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_0"], &tip_program_pubkey).0;
+    let tip_pda_1 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_1"], &tip_program_pubkey).0;
+    let tip_pda_2 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_2"], &tip_program_pubkey).0;
+    let tip_pda_3 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_3"], &tip_program_pubkey).0;
+    let tip_pda_4 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_4"], &tip_program_pubkey).0;
+    let tip_pda_5 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_5"], &tip_program_pubkey).0;
+    let tip_pda_6 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_6"], &tip_program_pubkey).0;
+    let tip_pda_7 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_7"], &tip_program_pubkey).0;
+
+    vec![
+        tip_pda_0, tip_pda_1, tip_pda_2, tip_pda_3, tip_pda_4, tip_pda_5, tip_pda_6, tip_pda_7,
+    ]
+}
+
+async fn maintenance_tick(
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+    rpc_client: &RpcClient,
+    leader_schedule: &mut HashMap<Pubkey, HashSet<Slot>>,
+    blockhash: &mut Hash,
+) -> Result<()> {
+    *blockhash = rpc_client
+        .get_latest_blockhash_with_commitment(CommitmentConfig {
+            commitment: CommitmentLevel::Confirmed,
+        })
+        .await?
+        .0;
+    let new_leader_schedule = searcher_client
+        .get_connected_leaders(ConnectedLeadersRequest {})
+        .await?
+        .into_inner()
+        .connected_validators
+        .iter()
+        .fold(HashMap::new(), |mut hmap, (pubkey, slot_list)| {
+            hmap.insert(
+                Pubkey::from_str(pubkey).unwrap(),
+                slot_list.slots.iter().cloned().collect(),
+            );
+            hmap
+        });
+    if new_leader_schedule != *leader_schedule {
+        info!("connected_validators: {:?}", new_leader_schedule.keys());
+        *leader_schedule = new_leader_schedule;
+    }
+
+    let next_scheduled_leader = searcher_client
+        .get_next_scheduled_leader(NextScheduledLeaderRequest {})
+        .await?
+        .into_inner();
+    info!(
+        "next_scheduled_leader: {} in {} slots",
+        next_scheduled_leader.next_leader_identity,
+        next_scheduled_leader.next_leader_slot - next_scheduled_leader.current_slot
+    );
+
+    Ok(())
+}
+
+fn print_block_stats(
+    block_stats: &mut HashMap<Slot, BlockStats>,
+    block: rpc_response::Response<RpcBlockUpdate>,
+    leader_schedule: &HashMap<Pubkey, HashSet<Slot>>,
+    block_signatures: &mut HashMap<Slot, HashSet<Signature>>,
+) {
+    const KEEP_SIGS_SLOTS: u64 = 20;
+
+    if let Some(stats) = block_stats.get(&block.context.slot) {
+        datapoint_info!(
+            "bundles-sent",
+            ("slot", block.context.slot, i64),
+            ("bundles", stats.bundles_sent.len(), i64),
+            ("total_send_elapsed_us", stats.send_elapsed, i64),
+            (
+                "sent_rt_pp_min",
+                stats.send_rt_per_packet.minimum().unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_min",
+                stats.send_rt_per_packet.maximum().unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_avg",
+                stats.send_rt_per_packet.mean().unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_p50",
+                stats
+                    .send_rt_per_packet
+                    .percentile(50.0)
+                    .unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_p90",
+                stats
+                    .send_rt_per_packet
+                    .percentile(90.0)
+                    .unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_p95",
+                stats
+                    .send_rt_per_packet
+                    .percentile(95.0)
+                    .unwrap_or_default(),
+                i64
+            ),
+        );
+    }
+
+    let maybe_leader = leader_schedule
+        .iter()
+        .find(|(_, slots)| slots.contains(&block.context.slot))
+        .map(|(leader, _)| leader);
+
+    if let Some(b) = &block.value.block {
+        if let Some(sigs) = &b.signatures {
+            let block_signatures: HashSet<Signature> = sigs
+                .iter()
+                .map(|s| Signature::from_str(&s).unwrap())
+                .collect();
+
+            // bundles that were sent before or during this slot
+            let bundles_sent_before_slot: HashMap<
+                &Slot,
+                &Vec<(
+                    BundledTransactions,
+                    result::Result<Response<SendBundleResponse>, Status>,
+                )>,
+            > = block_stats
+                .iter()
+                .filter(|(slot, _)| **slot <= block.context.slot)
+                .map(|(slot, stats)| (slot, stats.bundles_sent.as_ref()))
+                .collect();
+
+            if let Some(leader) = maybe_leader {
+                // number of bundles sent before or during this slot
+                let num_bundles_sent: usize = bundles_sent_before_slot
+                    .iter()
+                    .map(|(_, bundles_sent)| bundles_sent.len())
+                    .sum();
+
+                // number of bundles where sending returned ok
+                let num_bundles_sent_ok: usize = bundles_sent_before_slot
+                    .iter()
+                    .map(|(_, bundles_sent)| {
+                        bundles_sent
+                            .iter()
+                            .filter(|(_, send_response)| send_response.is_ok())
+                            .count()
+                    })
+                    .sum();
+
+                // a list of all bundles landed this slot that were sent before or during this slot
+                let bundles_landed: Vec<(&Slot, &BundledTransactions)> = bundles_sent_before_slot
+                    .iter()
+                    .flat_map(|(slot, bundles_sent_slot)| {
+                        bundles_sent_slot
+                            .iter()
+                            .filter(|(_, send_response)| send_response.is_ok())
+                            .filter_map(|(bundle_sent, _)| {
+                                if bundle_sent
+                                    .backrun_txs
+                                    .iter()
+                                    .chain(bundle_sent.mempool_txs.iter())
+                                    .all(|tx| block_signatures.contains(&tx.signatures[0]))
+                                {
+                                    Some((*slot, bundle_sent))
+                                } else {
+                                    None
+                                }
+                            })
+                    })
+                    .collect();
+
+                let mempool_txs_landed_no_bundle: Vec<(&Slot, &BundledTransactions)> =
+                    bundles_sent_before_slot
+                        .iter()
+                        .flat_map(|(slot, bundles_sent_slot)| {
+                            bundles_sent_slot
+                                .iter()
+                                .filter(|(_, send_response)| send_response.is_ok())
+                                .filter_map(|(bundle_sent, _)| {
+                                    if bundle_sent
+                                        .mempool_txs
+                                        .iter()
+                                        .any(|tx| block_signatures.contains(&tx.signatures[0]))
+                                        && !bundle_sent
+                                            .backrun_txs
+                                            .iter()
+                                            .any(|tx| block_signatures.contains(&tx.signatures[0]))
+                                    {
+                                        Some((*slot, bundle_sent))
+                                    } else {
+                                        None
+                                    }
+                                })
+                        })
+                        .collect();
+
+                // find the min and max distance from when the bundle was sent to what block it landed in
+                let min_bundle_send_slot = bundles_landed
+                    .iter()
+                    .map(|(slot, _)| **slot)
+                    .min()
+                    .unwrap_or(0);
+                let max_bundle_send_slot = bundles_landed
+                    .iter()
+                    .map(|(slot, _)| **slot)
+                    .max()
+                    .unwrap_or(0);
+
+                datapoint_info!(
+                    "leader-bundle-stats",
+                    ("slot", block.context.slot, i64),
+                    ("leader", leader.to_string(), String),
+                    ("block_txs", block_signatures.len(), i64),
+                    ("num_bundles_sent", num_bundles_sent, i64),
+                    ("num_bundles_sent_ok", num_bundles_sent_ok, i64),
+                    (
+                        "num_bundles_sent_err",
+                        num_bundles_sent - num_bundles_sent_ok,
+                        i64
+                    ),
+                    ("num_bundles_landed", bundles_landed.len(), i64),
+                    (
+                        "num_bundles_dropped",
+                        num_bundles_sent - bundles_landed.len(),
+                        i64
+                    ),
+                    ("min_bundle_send_slot", min_bundle_send_slot, i64),
+                    ("max_bundle_send_slot", max_bundle_send_slot, i64),
+                    (
+                        "mempool_txs_landed_no_bundle",
+                        mempool_txs_landed_no_bundle.len(),
+                        i64
+                    ),
+                );
+
+                // leaders last slot, clear everything out
+                // might mess up metrics if leader doesn't produce a last slot or there's lots of slots
+                // close to each other
+                if block.context.slot % 4 == 3 {
+                    block_stats.clear();
+                }
+            } else {
+                // figure out how many transactions in bundles landed in slots other than our leader
+                let num_mempool_txs_landed: usize = bundles_sent_before_slot
+                    .iter()
+                    .map(|(_, bundles)| {
+                        bundles
+                            .iter()
+                            .filter(|(bundle, _)| {
+                                bundle
+                                    .mempool_txs
+                                    .iter()
+                                    .any(|tx| block_signatures.contains(&tx.signatures[0]))
+                            })
+                            .count()
+                    })
+                    .sum();
+                if num_mempool_txs_landed > 0 {
+                    datapoint_info!(
+                        "non-leader-bundle-stats",
+                        ("slot", block.context.slot, i64),
+                        ("mempool_txs_landed", num_mempool_txs_landed, i64),
+                    );
                 }
             }
         }
     }
-    let len_before = backruns.len();
-    backruns.retain(|b| b.time_sent.elapsed() < Duration::from_secs(30));
-    let len_after = backruns.len();
 
-    BackrunStats {
-        slot,
-        num_expired: len_before - len_after,
-        num_tx_beat_ours: tx_beat_ours,
-        num_successful_bundles: successful_bundles,
-        num_pending: len_after,
-    }
-}
-
-#[allow(clippy::await_holding_lock)]
-async fn backrun_transaction(
-    transactions_of_interest: Vec<VersionedTransaction>,
-    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
-    valid_blockhashes: &VecDeque<Hash>,
-    kp: &Arc<Keypair>,
-) -> Result<Vec<BackrunResponse>, Status> {
-    let blockhash = *valid_blockhashes.front().unwrap();
-    info!("using blockhash {}", blockhash);
-    let mut results = Vec::new();
-
-    for tx in transactions_of_interest.into_iter() {
-        let kp = kp.clone();
-        let time_sent = Instant::now();
-        let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-            &[build_memo(
-                format!("jito backrun: {:?}", tx.signatures[0].to_string()).as_bytes(),
-                &[],
-            )],
-            Some(&kp.pubkey()),
-            &[kp.as_ref()],
-            blockhash,
-        ));
-        let bundle = SendBundleRequest {
-            bundle: Some(Bundle {
-                header: Some(Header {
-                    ts: Some(Timestamp::from(SystemTime::now())),
-                }),
-                packets: vec![
-                    proto_packet_from_versioned_tx(&tx),
-                    proto_packet_from_versioned_tx(&backrun_tx),
-                ],
-            }),
-        };
-
-        if let Ok(response) = searcher_client.send_bundle(bundle.clone()).await {
-            results.push(BackrunResponse {
-                bundle,
-                tx: tx.clone(),
-                backrun_tx,
-                uuid: response.into_inner().uuid,
-                time_sent,
-            });
+    if let Some(b) = &block.value.block {
+        if let Some(sigs) = &b.signatures {
+            block_signatures.insert(
+                block.context.slot,
+                sigs.iter()
+                    .map(|s| Signature::from_str(s).unwrap())
+                    .collect(),
+            );
         }
     }
-    Ok(results)
+
+    // throw away signatures for slots > KEEP_SIGS_SLOTS old
+    block_signatures.retain(|slot, _| *slot > block.context.slot - KEEP_SIGS_SLOTS);
 }
 
-fn get_transactions_of_interest(
-    maybe_pending_tx_notification: Result<Option<PendingTxNotification>, Status>,
-    pubkey: &Pubkey,
-    valid_blockhashes: &VecDeque<Hash>,
-) -> Result<Vec<VersionedTransaction>, Status> {
-    return match maybe_pending_tx_notification {
-        Ok(Some(pending_tx_notification)) => {
-            let expiration_time_since_epoch = pending_tx_notification
-                .expiration_time
-                .as_ref()
-                .map(|ts| SystemTime::try_from(ts.clone()).unwrap())
-                .unwrap_or(SystemTime::UNIX_EPOCH)
-                .duration_since(UNIX_EPOCH)
-                .unwrap();
-            let server_time_since_epoch = pending_tx_notification
-                .server_side_ts
-                .as_ref()
-                .map(|ts| SystemTime::try_from(ts.clone()).unwrap())
-                .unwrap_or(SystemTime::UNIX_EPOCH)
-                .duration_since(UNIX_EPOCH)
-                .unwrap();
+async fn run_searcher_loop(
+    auth_addr: String,
+    searcher_addr: String,
+    auth_keypair: Arc<Keypair>,
+    keypair: &Keypair,
+    rpc_url: String,
+    message: String,
+    tip_program_pubkey: Pubkey,
+    mut slot_receiver: Receiver<Slot>,
+    mut block_receiver: Receiver<rpc_response::Response<RpcBlockUpdate>>,
+    mut pending_tx_receiver: Receiver<PendingTxNotification>,
+) -> Result<()> {
+    let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
+    let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
+    let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
 
-            let transactions: Vec<VersionedTransaction> = pending_tx_notification
-                .transactions
-                .iter()
-                .filter_map(versioned_tx_from_packet)
-                .filter(|tx| tx.message.static_account_keys().contains(pubkey))
-                .filter(|tx| valid_blockhashes.contains(tx.message.recent_blockhash()))
-                .collect();
+    let mut searcher_client =
+        get_searcher_client(&auth_addr, &searcher_addr, &auth_keypair).await?;
 
-            if !transactions.is_empty() {
-                let now_since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-                let server_latency_us = now_since_epoch.as_micros() as i128
-                    - server_time_since_epoch.as_micros() as i128;
-                let time_to_expiration_us = expiration_time_since_epoch.as_micros() as i128
-                    - now_since_epoch.as_micros() as i128;
+    let mut rng = thread_rng();
 
-                info!("time_to_expiration_us: {:?}", time_to_expiration_us);
-                info!("server_latency_us {:?}", server_latency_us);
+    let tip_accounts = generate_tip_accounts(&tip_program_pubkey);
+    info!("tip accounts: {:?}", tip_accounts);
+
+    let rpc_client = RpcClient::new(rpc_url);
+    let mut blockhash = rpc_client
+        .get_latest_blockhash_with_commitment(CommitmentConfig {
+            commitment: CommitmentLevel::Confirmed,
+        })
+        .await?
+        .0;
+
+    let mut highest_slot = 0;
+    let mut is_leader_slot = false;
+
+    let mut tick = interval(Duration::from_secs(5));
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash).await?;
             }
+            maybe_pending_tx_notification = pending_tx_receiver.recv() => {
+                // block engine starts forwarding a few slots early, for super high activity accounts
+                // it might be ideal to wait until the leader slot is up
+                if is_leader_slot {
+                    let pending_tx_notification = maybe_pending_tx_notification.ok_or(BackrunError::Shutdown)?;
+                    let bundles = build_bundles(pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message);
+                    if !bundles.is_empty() {
+                        let now = Instant::now();
+                        let results = send_bundles(&mut searcher_client, &bundles).await?;
+                        let send_elapsed = now.elapsed().as_micros() as u64;
+                        let send_rt_pp_us = send_elapsed / bundles.len() as u64;
 
-            Ok(transactions)
+                        match block_stats.entry(highest_slot) {
+                            Entry::Occupied(mut entry) => {
+                                let mut stats = entry.get_mut();
+                                stats.bundles_sent.extend(bundles.into_iter().zip(results.into_iter()));
+                                stats.send_elapsed += send_elapsed;
+                                let _ = stats.send_rt_per_packet.increment(send_rt_pp_us);
+                            }
+                            Entry::Vacant(entry) => {
+                                let mut send_rt_per_packet = Histogram::new();
+                                let _ = send_rt_per_packet.increment(send_rt_pp_us);
+                                entry.insert(BlockStats {
+                                    bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
+                                    send_elapsed: send_elapsed,
+                                    send_rt_per_packet
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            maybe_slot = slot_receiver.recv() => {
+                highest_slot = maybe_slot.ok_or(BackrunError::Shutdown)?;
+                is_leader_slot = leader_schedule.iter().any(|(_, slots)| slots.contains(&highest_slot));
+            }
+            maybe_block = block_receiver.recv() => {
+                let block = maybe_block.ok_or(BackrunError::Shutdown)?;
+                print_block_stats(&mut block_stats, block, &leader_schedule, &mut block_signatures);
+            }
         }
-        Ok(None) => Err(Status::aborted("connection closed")),
-        Err(e) => Err(e),
-    };
+    }
+}
+
+fn main() -> Result<()> {
+    env_logger::builder()
+        .format_timestamp(Some(TimestampPrecision::Micros))
+        .init();
+    let args: Args = Args::parse();
+
+    let payer_keypair =
+        Arc::new(read_keypair_file(Path::new(&args.payer_keypair)).expect("parse kp file"));
+    let auth_keypair =
+        Arc::new(read_keypair_file(Path::new(&args.payer_keypair)).expect("parse kp file"));
+
+    set_host_id(auth_keypair.pubkey().to_string());
+
+    let backrun_pubkeys: Vec<Pubkey> = args
+        .backrun_accounts
+        .iter()
+        .map(|a| Pubkey::from_str(a).unwrap())
+        .collect();
+    let tip_program_pubkey = Pubkey::from_str(&args.tip_program_id).unwrap();
+
+    let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+    runtime.block_on(async move {
+        let (slot_sender, slot_receiver) = channel(100);
+        let (block_sender, block_receiver) = channel(100);
+        let (pending_tx_sender, pending_tx_receiver) = channel(100);
+
+        tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+        tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+        tokio::spawn(pending_tx_loop(
+            args.auth_addr.clone(),
+            args.searcher_addr.clone(),
+            auth_keypair.clone(),
+            pending_tx_sender,
+            backrun_pubkeys,
+        ));
+
+        let result = run_searcher_loop(
+            args.auth_addr,
+            args.searcher_addr,
+            auth_keypair,
+            &payer_keypair,
+            args.rpc_url,
+            args.message,
+            tip_program_pubkey,
+            slot_receiver,
+            block_receiver,
+            pending_tx_receiver,
+        )
+        .await;
+        error!("searcher loop exited result: {:?}", result);
+
+        Ok(())
+    })
 }
