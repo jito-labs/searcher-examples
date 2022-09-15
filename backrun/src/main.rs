@@ -133,7 +133,6 @@ fn build_bundles(
         .filter_map(|packet| {
             let mempool_tx = versioned_tx_from_packet(&packet)?;
             let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
-            info!("signature: {:?}", mempool_tx.signatures[0]);
 
             let backrun_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
                 &[
