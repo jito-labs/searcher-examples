@@ -266,7 +266,7 @@ fn print_block_stats(
     block_stats: &mut HashMap<Slot, BlockStats>,
     block: Option<rpc_response::Response<RpcBlockUpdate>>,
     leader_schedule: &HashMap<Pubkey, HashSet<Slot>>,
-    transactions_not_leader: &mut HashMap<Slot, HashSet<Signature>>,
+    block_signatures: &mut HashMap<Slot, HashSet<Signature>>,
 ) -> Result<()> {
     const KEEP_SIGS_SLOTS: u64 = 20;
 
@@ -282,9 +282,9 @@ fn print_block_stats(
         info!("block stats: {}", block.context.slot);
         info!(" leader: {}", leader);
 
-        if let Some(b) = block.value.block {
-            if let Some(sigs) = b.signatures {
-                let signatures: HashSet<Signature> = sigs
+        if let Some(b) = &block.value.block {
+            if let Some(sigs) = &b.signatures {
+                let signatures_this_block: HashSet<Signature> = sigs
                     .iter()
                     .map(|s| Signature::from_str(&s).unwrap())
                     .collect();
@@ -331,7 +331,7 @@ fn print_block_stats(
                                     .backrun_txs
                                     .iter()
                                     .chain(bundle_sent.mempool_txs.iter())
-                                    .all(|tx| signatures.contains(&tx.signatures[0]))
+                                    .all(|tx| signatures_this_block.contains(&tx.signatures[0]))
                                 {
                                     Some((*slot, bundle_sent))
                                 } else {
@@ -341,73 +341,62 @@ fn print_block_stats(
                     })
                     .collect();
 
-                // number of transactions that were mentioned in bundles but landed without them
-                let num_txs_landed_without_bundle: usize = bundles_sent_before_slot
+                // find the min and max distance from when the bundle was sent to what block it landed in
+                let min_bundle_land_slot = bundles_landed
                     .iter()
-                    .map(|(_, bundles_sent)| {
-                        bundles_sent
-                            .iter()
-                            .filter(|(_, send_response)| send_response.is_ok())
-                            .filter(|(bundle, _)| {
-                                bundle
-                                    .mempool_txs
-                                    .iter()
-                                    .any(|tx| signatures.contains(&tx.signatures[0]))
-                                    && !bundle
-                                        .backrun_txs
-                                        .iter()
-                                        .any(|tx| signatures.contains(&tx.signatures[0]))
-                            })
-                            .count()
-                    })
-                    .sum();
+                    .map(|(slot, _)| **slot)
+                    .min()
+                    .unwrap_or(0);
+                let max_bundle_land_slot = bundles_landed
+                    .iter()
+                    .map(|(slot, _)| **slot)
+                    .max()
+                    .unwrap_or(0);
+                let max_bundle_distance = block.context.slot - min_bundle_land_slot;
+                let min_bundle_distance = block.context.slot - max_bundle_land_slot;
 
-                info!(" txs: {}", signatures.len());
+                info!(" txs: {}", signatures_this_block.len());
                 info!(" num_bundles_sent: {}", num_bundles_sent);
                 info!(" num_bundles_sent_ok: {}", num_bundles_sent_ok);
                 info!(
                     " num_bundles_sent_err: {}",
                     num_bundles_sent - num_bundles_sent_ok
                 );
-
-                info!(
-                    " num_txs_landed_without_bundle: {}",
-                    num_txs_landed_without_bundle
-                );
                 info!(" num_bundles_landed: {}", bundles_landed.len());
                 info!(
                     " num_bundles_dropped: {}",
                     num_bundles_sent - bundles_landed.len()
                 );
-                // let num_bundles_landed = info!("num_bundles_landed: {}");
+                info!("min_bundle_distance: {}", min_bundle_distance);
+                info!("max_bundle_distance: {}", max_bundle_distance);
             } else {
                 info!("missing signatures");
             }
         } else {
             info!(" txs: 0");
         }
-    } else {
-        if let Some(b) = block.value.block {
-            if let Some(sigs) = b.signatures {
-                transactions_not_leader.insert(
-                    block.context.slot,
-                    sigs.iter()
-                        .map(|s| Signature::from_str(s).unwrap())
-                        .collect(),
-                );
-            }
+
+        // leaders last slot, clear everything out
+        // might mess up metrics if leader doesn't produce a last slot or there's lots of slots
+        // close to each other
+        if block.context.slot % 4 == 3 {
+            block_stats.clear();
+        }
+    }
+
+    if let Some(b) = &block.value.block {
+        if let Some(sigs) = &b.signatures {
+            block_signatures.insert(
+                block.context.slot,
+                sigs.iter()
+                    .map(|s| Signature::from_str(s).unwrap())
+                    .collect(),
+            );
         }
     }
 
     // throw away signatures for slots > KEEP_SIGS_SLOTS old
-    transactions_not_leader.retain(|slot, _| *slot > block.context.slot - KEEP_SIGS_SLOTS);
-
-    // leaders last slot, clear everything out
-    // might mess up metrics if leader doesn't produce a last slot or there's lots of slots
-    // close to each other
-    if block.context.slot % 4 == 3 {
-        block_stats.clear();
-    }
+    block_signatures.retain(|slot, _| *slot > block.context.slot - KEEP_SIGS_SLOTS);
 
     Ok(())
 }
@@ -423,7 +412,7 @@ async fn run_searcher_loop(
 ) -> Result<()> {
     let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
-    let mut transactions_not_leader: HashMap<Slot, HashSet<Signature>> = HashMap::new();
+    let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
 
     let mut rng = thread_rng();
 
@@ -512,7 +501,7 @@ async fn run_searcher_loop(
                 }
             }
             maybe_block = block_update_subscription.next() => {
-                print_block_stats(&mut block_stats, maybe_block, &leader_schedule, &mut transactions_not_leader)?;
+                print_block_stats(&mut block_stats, maybe_block, &leader_schedule, &mut block_signatures)?;
             }
         }
     }
