@@ -97,7 +97,8 @@ enum BackrunError {
 
 #[derive(Clone)]
 struct BundledTransactions {
-    versioned_txs: Vec<VersionedTransaction>,
+    mempool_txs: Vec<VersionedTransaction>,
+    backrun_txs: Vec<VersionedTransaction>,
 }
 
 struct BlockStats {
@@ -132,7 +133,7 @@ fn build_bundles(
                 .transactions
                 .into_iter()
                 .filter_map(|packet| {
-                    let versioned_tx = versioned_tx_from_packet(&packet)?;
+                    let mempool_tx = versioned_tx_from_packet(&packet)?;
                     let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
 
                     let backrun_tx =
@@ -142,7 +143,7 @@ fn build_bundles(
                                     format!(
                                         "{}: {:?}",
                                         message,
-                                        versioned_tx.signatures[0].to_string()
+                                        mempool_tx.signatures[0].to_string()
                                     )
                                     .as_bytes(),
                                     &[],
@@ -154,7 +155,8 @@ fn build_bundles(
                             blockhash.clone(),
                         ));
                     Some(BundledTransactions {
-                        versioned_txs: vec![versioned_tx, backrun_tx],
+                        mempool_txs: vec![mempool_tx],
+                        backrun_txs: vec![backrun_tx],
                     })
                 })
                 .collect();
@@ -178,9 +180,10 @@ async fn send_bundles(
     for b in bundles {
         let mut searcher_client = searcher_client.clone();
         let packets = b
-            .versioned_txs
+            .mempool_txs
             .iter()
             .map(proto_packet_from_versioned_tx)
+            .chain(b.backrun_txs.iter().map(proto_packet_from_versioned_tx))
             .collect();
 
         let task = tokio::spawn(async move {
@@ -263,94 +266,141 @@ fn print_block_stats(
     block_stats: &mut HashMap<Slot, BlockStats>,
     block: Option<rpc_response::Response<RpcBlockUpdate>>,
     leader_schedule: &HashMap<Pubkey, HashSet<Slot>>,
+    transactions_not_leader: &mut HashMap<Slot, HashSet<Signature>>,
 ) -> Result<()> {
+    const KEEP_SIGS_SLOTS: u64 = 20;
+
     let block = block
         .ok_or_else(|| PubsubClientError::ConnectionClosed("block_subscribe closed".to_string()))?;
-    debug!("got block: {}", block.context.slot);
-    for (leader, slots) in leader_schedule {
-        if slots.contains(&block.context.slot) {
-            info!("block stats: {}", block.context.slot);
-            info!(" leader: {}", leader);
 
-            if let Some(b) = block.value.block {
-                if let Some(sigs) = b.signatures {
-                    let signatures: HashSet<Signature> = sigs
-                        .iter()
-                        .map(|s| Signature::from_str(&s).unwrap())
-                        .collect();
+    let maybe_leader = leader_schedule
+        .iter()
+        .find(|(_, slots)| slots.contains(&block.context.slot))
+        .map(|(leader, _)| leader);
 
-                    // find bundles sent on or before this block
-                    let bundles_sent: HashMap<
-                        &Slot,
-                        &Vec<(
-                            BundledTransactions,
-                            result::Result<Response<SendBundleResponse>, Status>,
-                        )>,
-                    > = block_stats
-                        .iter()
-                        .filter(|(slot, _)| **slot <= block.context.slot)
-                        .map(|(slot, stats)| (slot, stats.bundles_sent.as_ref()))
-                        .collect();
+    if let Some(leader) = maybe_leader {
+        info!("block stats: {}", block.context.slot);
+        info!(" leader: {}", leader);
 
-                    let num_bundles_sent: usize = bundles_sent
-                        .iter()
-                        .map(|(_, bundles_sent)| bundles_sent.len())
-                        .sum();
-                    let num_bundles_sent_ok: usize = bundles_sent
-                        .iter()
-                        .map(|(_, bundles_sent)| {
-                            bundles_sent
-                                .iter()
-                                .filter(|(_, send_response)| send_response.is_ok())
-                                .count()
-                        })
-                        .sum();
+        if let Some(b) = block.value.block {
+            if let Some(sigs) = b.signatures {
+                let signatures: HashSet<Signature> = sigs
+                    .iter()
+                    .map(|s| Signature::from_str(&s).unwrap())
+                    .collect();
 
-                    let bundles_landed: Vec<(&Slot, &BundledTransactions)> = bundles_sent
-                        .iter()
-                        .flat_map(|(slot, bundles_sent)| {
-                            bundles_sent
-                                .iter()
-                                .filter(|(_, send_response)| send_response.is_ok())
-                                .filter_map(|(bundle_sent, _)| {
-                                    if bundle_sent
-                                        .versioned_txs
+                // bundles that were sent before or during this slot
+                let bundles_sent_before_slot: HashMap<
+                    &Slot,
+                    &Vec<(
+                        BundledTransactions,
+                        result::Result<Response<SendBundleResponse>, Status>,
+                    )>,
+                > = block_stats
+                    .iter()
+                    .filter(|(slot, _)| **slot <= block.context.slot)
+                    .map(|(slot, stats)| (slot, stats.bundles_sent.as_ref()))
+                    .collect();
+
+                // number of bundles sent before or during this slot
+                let num_bundles_sent: usize = bundles_sent_before_slot
+                    .iter()
+                    .map(|(_, bundles_sent)| bundles_sent.len())
+                    .sum();
+
+                // number of bundles where sending returned ok
+                let num_bundles_sent_ok: usize = bundles_sent_before_slot
+                    .iter()
+                    .map(|(_, bundles_sent)| {
+                        bundles_sent
+                            .iter()
+                            .filter(|(_, send_response)| send_response.is_ok())
+                            .count()
+                    })
+                    .sum();
+
+                // a list of all bundles landed this slot that were sent before or during this slot
+                let bundles_landed: Vec<(&Slot, &BundledTransactions)> = bundles_sent_before_slot
+                    .iter()
+                    .flat_map(|(slot, bundles_sent_slot)| {
+                        bundles_sent_slot
+                            .iter()
+                            .filter(|(_, send_response)| send_response.is_ok())
+                            .filter_map(|(bundle_sent, _)| {
+                                if bundle_sent
+                                    .backrun_txs
+                                    .iter()
+                                    .chain(bundle_sent.mempool_txs.iter())
+                                    .all(|tx| signatures.contains(&tx.signatures[0]))
+                                {
+                                    Some((*slot, bundle_sent))
+                                } else {
+                                    None
+                                }
+                            })
+                    })
+                    .collect();
+
+                // number of transactions that were mentioned in bundles but landed without them
+                let num_txs_landed_without_bundle: usize = bundles_sent_before_slot
+                    .iter()
+                    .map(|(_, bundles_sent)| {
+                        bundles_sent
+                            .iter()
+                            .filter(|(_, send_response)| send_response.is_ok())
+                            .filter(|(bundle, _)| {
+                                bundle
+                                    .mempool_txs
+                                    .iter()
+                                    .any(|tx| signatures.contains(&tx.signatures[0]))
+                                    && !bundle
+                                        .backrun_txs
                                         .iter()
-                                        .all(|tx| signatures.contains(&tx.signatures[0]))
-                                    {
-                                        Some((*slot, bundle_sent))
-                                    } else {
-                                        None
-                                    }
-                                })
-                        })
-                        .collect();
+                                        .any(|tx| signatures.contains(&tx.signatures[0]))
+                            })
+                            .count()
+                    })
+                    .sum();
 
-                    info!(" txs: {}", signatures.len());
-                    info!(" num_bundles_sent: {}", num_bundles_sent);
-                    info!(" num_bundles_sent_ok: {}", num_bundles_sent_ok);
-                    info!(
-                        " num_bundles_sent_err: {}",
-                        num_bundles_sent - num_bundles_sent_ok
-                    );
+                info!(" txs: {}", signatures.len());
+                info!(" num_bundles_sent: {}", num_bundles_sent);
+                info!(" num_bundles_sent_ok: {}", num_bundles_sent_ok);
+                info!(
+                    " num_bundles_sent_err: {}",
+                    num_bundles_sent - num_bundles_sent_ok
+                );
 
-                    info!("num_bundes_landed: {}", bundles_landed.len());
-                    info!(
-                        "num_bundles_dropped: {}",
-                        num_bundles_sent - bundles_landed.len()
-                    );
-
-                    // let num_bundles_landed = info!("num_bundles_landed: {}");
-                } else {
-                    info!("missing signatures");
-                }
+                info!(
+                    " num_txs_landed_without_bundle: {}",
+                    num_txs_landed_without_bundle
+                );
+                info!(" num_bundles_landed: {}", bundles_landed.len());
+                info!(
+                    " num_bundles_dropped: {}",
+                    num_bundles_sent - bundles_landed.len()
+                );
+                // let num_bundles_landed = info!("num_bundles_landed: {}");
             } else {
-                info!(" txs: 0");
+                info!("missing signatures");
             }
-
-            break;
+        } else {
+            info!(" txs: 0");
+        }
+    } else {
+        if let Some(b) = block.value.block {
+            if let Some(sigs) = b.signatures {
+                transactions_not_leader.insert(
+                    block.context.slot,
+                    sigs.iter()
+                        .map(|s| Signature::from_str(s).unwrap())
+                        .collect(),
+                );
+            }
         }
     }
+
+    // throw away signatures for slots > KEEP_SIGS_SLOTS old
+    transactions_not_leader.retain(|slot, _| *slot > block.context.slot - KEEP_SIGS_SLOTS);
 
     // leaders last slot, clear everything out
     // might mess up metrics if leader doesn't produce a last slot or there's lots of slots
@@ -373,6 +423,7 @@ async fn run_searcher_loop(
 ) -> Result<()> {
     let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
+    let mut transactions_not_leader: HashMap<Slot, HashSet<Signature>> = HashMap::new();
 
     let mut rng = thread_rng();
 
@@ -461,7 +512,7 @@ async fn run_searcher_loop(
                 }
             }
             maybe_block = block_update_subscription.next() => {
-                print_block_stats(&mut block_stats, maybe_block, &leader_schedule)?;
+                print_block_stats(&mut block_stats, maybe_block, &leader_schedule, &mut transactions_not_leader)?;
             }
         }
     }
