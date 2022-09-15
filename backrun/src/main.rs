@@ -103,7 +103,6 @@ struct BundledTransactions {
 }
 
 struct BlockStats {
-    slot: Slot,
     bundles_sent: Vec<(
         BundledTransactions,
         result::Result<Response<SendBundleResponse>, Status>,
@@ -274,34 +273,34 @@ fn print_block_stats(
     let block = block
         .ok_or_else(|| PubsubClientError::ConnectionClosed("block_subscribe closed".to_string()))?;
 
-    datapoint_info!("block-received", ("slot", block.context.slot, i64));
+    datapoint_debug!("block-received", ("slot", block.context.slot, i64));
 
     let maybe_leader = leader_schedule
         .iter()
         .find(|(_, slots)| slots.contains(&block.context.slot))
         .map(|(leader, _)| leader);
 
-    if let Some(leader) = maybe_leader {
-        if let Some(b) = &block.value.block {
-            if let Some(sigs) = &b.signatures {
-                let signatures_this_block: HashSet<Signature> = sigs
-                    .iter()
-                    .map(|s| Signature::from_str(&s).unwrap())
-                    .collect();
+    if let Some(b) = &block.value.block {
+        if let Some(sigs) = &b.signatures {
+            let block_signatures: HashSet<Signature> = sigs
+                .iter()
+                .map(|s| Signature::from_str(&s).unwrap())
+                .collect();
 
-                // bundles that were sent before or during this slot
-                let bundles_sent_before_slot: HashMap<
-                    &Slot,
-                    &Vec<(
-                        BundledTransactions,
-                        result::Result<Response<SendBundleResponse>, Status>,
-                    )>,
-                > = block_stats
-                    .iter()
-                    .filter(|(slot, _)| **slot <= block.context.slot)
-                    .map(|(slot, stats)| (slot, stats.bundles_sent.as_ref()))
-                    .collect();
+            // bundles that were sent before or during this slot
+            let bundles_sent_before_slot: HashMap<
+                &Slot,
+                &Vec<(
+                    BundledTransactions,
+                    result::Result<Response<SendBundleResponse>, Status>,
+                )>,
+            > = block_stats
+                .iter()
+                .filter(|(slot, _)| **slot <= block.context.slot)
+                .map(|(slot, stats)| (slot, stats.bundles_sent.as_ref()))
+                .collect();
 
+            if let Some(leader) = maybe_leader {
                 // number of bundles sent before or during this slot
                 let num_bundles_sent: usize = bundles_sent_before_slot
                     .iter()
@@ -331,7 +330,7 @@ fn print_block_stats(
                                     .backrun_txs
                                     .iter()
                                     .chain(bundle_sent.mempool_txs.iter())
-                                    .all(|tx| signatures_this_block.contains(&tx.signatures[0]))
+                                    .all(|tx| block_signatures.contains(&tx.signatures[0]))
                                 {
                                     Some((*slot, bundle_sent))
                                 } else {
@@ -359,7 +358,7 @@ fn print_block_stats(
                     "leader-bundle-stats",
                     ("slot", block.context.slot, i64),
                     ("leader", leader.to_string(), String),
-                    ("block_txs", signatures_this_block.len(), i64),
+                    ("block_txs", block_signatures.len(), i64),
                     ("num_bundles_sent", num_bundles_sent, i64),
                     ("num_bundles_sent_ok", num_bundles_sent_ok, i64),
                     (
@@ -376,18 +375,37 @@ fn print_block_stats(
                     ("min_bundle_distance", min_bundle_distance, i64),
                     ("max_bundle_distance", max_bundle_distance, i64),
                 );
-            } else {
-                warn!("missing signatures");
-            }
-        } else {
-            warn!("txs: 0");
-        }
 
-        // leaders last slot, clear everything out
-        // might mess up metrics if leader doesn't produce a last slot or there's lots of slots
-        // close to each other
-        if block.context.slot % 4 == 3 {
-            block_stats.clear();
+                // leaders last slot, clear everything out
+                // might mess up metrics if leader doesn't produce a last slot or there's lots of slots
+                // close to each other
+                if block.context.slot % 4 == 3 {
+                    block_stats.clear();
+                }
+            } else {
+                // figure out how many transactions in bundles landed in slots other than our leader
+                let num_mempool_txs_landed: usize = bundles_sent_before_slot
+                    .iter()
+                    .map(|(_, bundles)| {
+                        bundles
+                            .iter()
+                            .filter(|(bundle, _)| {
+                                bundle
+                                    .mempool_txs
+                                    .iter()
+                                    .any(|tx| block_signatures.contains(&tx.signatures[0]))
+                            })
+                            .count()
+                    })
+                    .sum();
+                if num_mempool_txs_landed > 0 {
+                    datapoint_debug!(
+                        "non-leader-bundle-stats",
+                        ("slot", block.context.slot, i64),
+                        ("mempool_txs_landed", num_mempool_txs_landed, i64),
+                    );
+                }
+            }
         }
     }
 
@@ -482,7 +500,6 @@ async fn run_searcher_loop(
                         Entry::Vacant(entry) => {
                             inserted_new = true;
                             entry.insert(BlockStats {
-                                slot: highest_slot,
                                 bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
                             });
                         }
