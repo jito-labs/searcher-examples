@@ -274,6 +274,8 @@ fn print_block_stats(
     let block = block
         .ok_or_else(|| PubsubClientError::ConnectionClosed("block_subscribe closed".to_string()))?;
 
+    datapoint_info!("block-received", ("slot", block.context.slot, i64));
+
     let maybe_leader = leader_schedule
         .iter()
         .find(|(_, slots)| slots.contains(&block.context.slot))
@@ -375,10 +377,10 @@ fn print_block_stats(
                     ("max_bundle_distance", max_bundle_distance, i64),
                 );
             } else {
-                info!(" missing signatures");
+                warn!("missing signatures");
             }
         } else {
-            info!(" txs: 0");
+            warn!("txs: 0");
         }
 
         // leaders last slot, clear everything out

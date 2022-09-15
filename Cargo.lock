@@ -2673,6 +2673,7 @@ dependencies = [
  "log",
  "prost-types",
  "serde",
+ "solana-metrics",
  "solana-sdk",
  "thiserror",
  "tokio",

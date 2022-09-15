@@ -7,6 +7,7 @@ use jito_protos::auth::{
     GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
 };
 use prost_types::Timestamp;
+use solana_metrics::datapoint_info;
 use solana_sdk::signature::{Keypair, Signer};
 use tokio::{task::JoinHandle, time::sleep};
 use tonic::{service::Interceptor, transport::Channel, Request, Status};
@@ -107,26 +108,39 @@ impl ClientInterceptor {
                 ) {
                     // re-run entire auth workflow is refresh token expiring soon
                     (true, _) => {
-                        // TODO (LB): don't die
-                        let (new_access_token, new_refresh_token) =
-                            Self::auth(&mut auth_service_client, &keypair, role).await?;
-
-                        *bearer_token.write().unwrap() = new_access_token.value.clone();
-                        access_token_expiration = new_access_token.expires_at_utc.unwrap();
-                        refresh_token = new_refresh_token;
+                        let is_error = {
+                            if let Ok((new_access_token, new_refresh_token)) =
+                                Self::auth(&mut auth_service_client, &keypair, role).await
+                            {
+                                *bearer_token.write().unwrap() = new_access_token.value.clone();
+                                access_token_expiration = new_access_token.expires_at_utc.unwrap();
+                                refresh_token = new_refresh_token;
+                                false
+                            } else {
+                                true
+                            }
+                        };
+                        datapoint_info!("searcher-full-auth", ("is_error", is_error, bool));
                     }
                     // re-up the access token if it expires soon
                     (_, true) => {
-                        // TODO (LB): don't die
-                        let refresh_resp = auth_service_client
-                            .refresh_access_token(RefreshAccessTokenRequest {
-                                refresh_token: refresh_token.value.clone(),
-                            })
-                            .await?
-                            .into_inner();
-                        let access_token = refresh_resp.access_token.unwrap();
-                        *bearer_token.write().unwrap() = access_token.value.clone();
-                        access_token_expiration = access_token.expires_at_utc.unwrap();
+                        let is_error = {
+                            if let Ok(refresh_resp) = auth_service_client
+                                .refresh_access_token(RefreshAccessTokenRequest {
+                                    refresh_token: refresh_token.value.clone(),
+                                })
+                                .await
+                            {
+                                let access_token = refresh_resp.into_inner().access_token.unwrap();
+                                *bearer_token.write().unwrap() = access_token.value.clone();
+                                access_token_expiration = access_token.expires_at_utc.unwrap();
+                                false
+                            } else {
+                                true
+                            }
+                        };
+
+                        datapoint_info!("searcher-refresh-auth", ("is_error", is_error, bool));
                     }
                     _ => {
                         sleep(Duration::from_secs(60)).await;
