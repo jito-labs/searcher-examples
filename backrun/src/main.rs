@@ -56,10 +56,6 @@ struct Args {
     #[clap(long, env)]
     searcher_addr: String,
 
-    /// Accounts to backrun
-    #[clap(long, env)]
-    backrun_accounts: Vec<String>,
-
     /// Path to keypair file used to sign and pay for transactions
     #[clap(long, env)]
     payer_keypair: String,
@@ -83,6 +79,16 @@ struct Args {
     /// Tip program public key
     #[clap(long, env)]
     tip_program_id: String,
+}
+
+#[derive(Subcommand, Debug)]
+enum Mode {
+    /// Tries to backrun transactions mentioning the provided accounts.
+    Backrun { backrun_accounts: Vec<String> },
+
+    /// Runs in canary mode where it's expected to land bundles at a high probability every slot we're leader.
+    /// Backruns a self submitted transaction expecting the bundle to land in favor of the single transaction.
+    Canary,
 }
 
 #[derive(Debug, Error)]
@@ -202,10 +208,13 @@ fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
     ]
 }
 
+/// Maintains state this program relies on to reliably land bundles, such as:
+///     - Interfaces with the searcher-service to fetch connected validators' leader slots.
+///     - Update latest blockhash used by bundles by querying the RPC server.
 async fn maintenance_tick(
     searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     rpc_client: &RpcClient,
-    leader_schedule: &mut HashMap<Pubkey, HashSet<Slot>>,
+    connected_leaders_schedule: &mut HashMap<Pubkey, HashSet<Slot>>,
     blockhash: &mut Hash,
 ) -> Result<()> {
     *blockhash = rpc_client
@@ -214,7 +223,7 @@ async fn maintenance_tick(
         })
         .await?
         .0;
-    let new_leader_schedule = searcher_client
+    let new_connected_leaders_schedule = searcher_client
         .get_connected_leaders(ConnectedLeadersRequest {})
         .await?
         .into_inner()
@@ -227,9 +236,12 @@ async fn maintenance_tick(
             );
             hmap
         });
-    if new_leader_schedule != *leader_schedule {
-        info!("connected_validators: {:?}", new_leader_schedule.keys());
-        *leader_schedule = new_leader_schedule;
+    if new_connected_leaders_schedule != *connected_leaders_schedule {
+        info!(
+            "connected_validators: {:?}",
+            connected_validators_leader_schedule.keys()
+        );
+        *connected_leaders_schedule = new_connected_leaders_schedule;
     }
 
     let next_scheduled_leader = searcher_client
