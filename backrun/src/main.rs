@@ -6,7 +6,7 @@ use std::time::Instant;
 use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
 
 use crate::event_loops::{block_subscribe_loop, pending_tx_loop, slot_subscribe_loop};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
 use histogram::Histogram;
 use jito_protos::bundle::Bundle;
@@ -48,6 +48,10 @@ use tonic::{Response, Status};
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
+    /// Mode
+    #[clap(subcommand)]
+    mode: Mode,
+
     /// Address for auth service
     #[clap(long, env)]
     auth_addr: String,
@@ -125,7 +129,51 @@ struct BlockStats {
 
 type Result<T> = result::Result<T, BackrunError>;
 
-fn build_bundles(
+async fn send_canary_bundle(
+    keypair: &Keypair,
+    blockhash: &Hash,
+    tip_accounts: &[Pubkey],
+    rng: &mut ThreadRng,
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+    slot: &Slot,
+) {
+    let tip_account = tip_accounts[rng.gen_range(0..tip_accounts.len())];
+
+    let mut canary_txs = vec![];
+    // ToDo (JL): How man tx per bundle?
+    for index in 1..4 {
+        canary_txs.push(VersionedTransaction::from(
+            Transaction::new_signed_with_payer(
+                &[
+                    build_memo(
+                        format!("Canary TX {}, slot:   {}", index, slot).as_bytes(),
+                        &[],
+                    ),
+                    transfer(&keypair.pubkey(), &tip_account, 1),
+                ],
+                Some(&keypair.pubkey()),
+                &[keypair],
+                blockhash.clone(),
+            ),
+        ));
+    }
+
+    let packets = canary_txs
+        .iter()
+        .map(proto_packet_from_versioned_tx)
+        .collect();
+
+    let _ = searcher_client
+        .send_bundle(SendBundleRequest {
+            bundle: Some(Bundle {
+                header: None,
+                packets,
+            }),
+        })
+        .await;
+}
+
+fn build_backrun_bundles(
     pending_tx_notification: PendingTxNotification,
     keypair: &Keypair,
     blockhash: &Hash,
@@ -239,7 +287,7 @@ async fn maintenance_tick(
     if new_connected_leaders_schedule != *connected_leaders_schedule {
         info!(
             "connected_validators: {:?}",
-            connected_validators_leader_schedule.keys()
+            new_connected_leaders_schedule.keys()
         );
         *connected_leaders_schedule = new_connected_leaders_schedule;
     }
@@ -490,7 +538,60 @@ fn print_block_stats(
     block_signatures.retain(|slot, _| *slot > block.context.slot - KEEP_SIGS_SLOTS);
 }
 
-async fn run_searcher_loop(
+async fn run_canary_searcher_loop(
+    auth_addr: String,
+    searcher_addr: String,
+    auth_keypair: Arc<Keypair>,
+    keypair: &Keypair,
+    rpc_url: String,
+    tip_program_pubkey: Pubkey,
+    mut slot_receiver: Receiver<Slot>,
+    mut block_receiver: Receiver<rpc_response::Response<RpcBlockUpdate>>,
+) -> Result<()> {
+    let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
+    let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
+    let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
+
+    let mut searcher_client =
+        get_searcher_client(&auth_addr, &searcher_addr, &auth_keypair).await?;
+
+    let mut rng = thread_rng();
+
+    let tip_accounts = generate_tip_accounts(&tip_program_pubkey);
+    info!("tip accounts: {:?}", tip_accounts);
+
+    let rpc_client = RpcClient::new(rpc_url);
+    let mut blockhash = rpc_client
+        .get_latest_blockhash_with_commitment(CommitmentConfig {
+            commitment: CommitmentLevel::Confirmed,
+        })
+        .await?
+        .0;
+
+    let mut tick = interval(Duration::from_secs(5));
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash).await?;
+            }
+
+            maybe_slot = slot_receiver.recv() => {
+                let highest_slot = maybe_slot.ok_or(BackrunError::Shutdown)?;
+                if leader_schedule.iter().any(|(_, slots)| slots.contains(&highest_slot)) {
+                    let _ = send_canary_bundle(&keypair, &blockhash, &tip_accounts, &mut rng, &mut searcher_client, &highest_slot).await;
+                }
+            }
+
+            maybe_block = block_receiver.recv() => {
+                let block = maybe_block.ok_or(BackrunError::Shutdown)?;
+                print_block_stats(&mut block_stats, block, &leader_schedule, &mut block_signatures);
+            }
+
+        }
+    }
+}
+
+async fn run_backrun_searcher_loop(
     auth_addr: String,
     searcher_addr: String,
     auth_keypair: Arc<Keypair>,
@@ -536,7 +637,7 @@ async fn run_searcher_loop(
                 // it might be ideal to wait until the leader slot is up
                 if is_leader_slot {
                     let pending_tx_notification = maybe_pending_tx_notification.ok_or(BackrunError::Shutdown)?;
-                    let bundles = build_bundles(pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message);
+                    let bundles = build_backrun_bundles(pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message);
                     if !bundles.is_empty() {
                         let now = Instant::now();
                         let results = send_bundles(&mut searcher_client, &bundles).await?;
@@ -588,44 +689,74 @@ fn main() -> Result<()> {
 
     set_host_id(auth_keypair.pubkey().to_string());
 
-    let backrun_pubkeys: Vec<Pubkey> = args
-        .backrun_accounts
-        .iter()
-        .map(|a| Pubkey::from_str(a).unwrap())
-        .collect();
-    let tip_program_pubkey = Pubkey::from_str(&args.tip_program_id).unwrap();
+    match args.mode {
+        Mode::Backrun { backrun_accounts } => {
+            let backrun_pubkeys: Vec<Pubkey> = backrun_accounts
+                .iter()
+                .map(|a| Pubkey::from_str(a).unwrap())
+                .collect();
+            let tip_program_pubkey = Pubkey::from_str(&args.tip_program_id).unwrap();
 
-    let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-    runtime.block_on(async move {
-        let (slot_sender, slot_receiver) = channel(100);
-        let (block_sender, block_receiver) = channel(100);
-        let (pending_tx_sender, pending_tx_receiver) = channel(100);
+            let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+            runtime.block_on(async move {
+                let (slot_sender, slot_receiver) = channel(100);
+                let (block_sender, block_receiver) = channel(100);
+                let (pending_tx_sender, pending_tx_receiver) = channel(100);
 
-        tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
-        tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
-        tokio::spawn(pending_tx_loop(
-            args.auth_addr.clone(),
-            args.searcher_addr.clone(),
-            auth_keypair.clone(),
-            pending_tx_sender,
-            backrun_pubkeys,
-        ));
+                tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+                tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+                tokio::spawn(pending_tx_loop(
+                    args.auth_addr.clone(),
+                    args.searcher_addr.clone(),
+                    auth_keypair.clone(),
+                    pending_tx_sender,
+                    backrun_pubkeys,
+                ));
 
-        let result = run_searcher_loop(
-            args.auth_addr,
-            args.searcher_addr,
-            auth_keypair,
-            &payer_keypair,
-            args.rpc_url,
-            args.message,
-            tip_program_pubkey,
-            slot_receiver,
-            block_receiver,
-            pending_tx_receiver,
-        )
-        .await;
-        error!("searcher loop exited result: {:?}", result);
+                let result = run_backrun_searcher_loop(
+                    args.auth_addr,
+                    args.searcher_addr,
+                    auth_keypair,
+                    &payer_keypair,
+                    args.rpc_url,
+                    args.message,
+                    tip_program_pubkey,
+                    slot_receiver,
+                    block_receiver,
+                    pending_tx_receiver,
+                )
+                .await;
+                error!("searcher loop exited result: {:?}", result);
 
-        Ok(())
-    })
+                Ok(())
+            })
+        }
+        Mode::Canary => {
+            let tip_program_pubkey = Pubkey::from_str(&args.tip_program_id).unwrap();
+
+            let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+            runtime.block_on(async move {
+                let (slot_sender, slot_receiver) = channel(100);
+                let (block_sender, block_receiver) = channel(100);
+
+                tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
+                tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
+
+                let result = run_canary_searcher_loop(
+                    args.auth_addr,
+                    args.searcher_addr,
+                    auth_keypair,
+                    &payer_keypair,
+                    args.rpc_url,
+                    tip_program_pubkey,
+                    slot_receiver,
+                    block_receiver,
+                )
+                .await;
+                error!("searcher loop exited result: {:?}", result);
+
+                Ok(())
+            })
+        }
+    }
 }
