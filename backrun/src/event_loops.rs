@@ -1,21 +1,24 @@
+use std::{sync::Arc, time::Duration};
+
 use futures_util::StreamExt;
 use jito_protos::searcher::{PendingTxNotification, PendingTxSubscriptionRequest};
 use log::info;
 use searcher_service_client::get_searcher_client;
-use solana_client::nonblocking::pubsub_client::PubsubClient;
-use solana_client::rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter};
-use solana_client::rpc_response;
-use solana_client::rpc_response::{RpcBlockUpdate, SlotUpdate};
+use solana_client::{
+    nonblocking::pubsub_client::PubsubClient,
+    rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
+    rpc_response,
+    rpc_response::{RpcBlockUpdate, SlotUpdate},
+};
 use solana_metrics::{datapoint_error, datapoint_info};
-use solana_sdk::clock::Slot;
-use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
+use solana_sdk::{
+    clock::Slot,
+    commitment_config::{CommitmentConfig, CommitmentLevel},
+    pubkey::Pubkey,
+    signature::Keypair,
+};
 use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc::Sender;
-use tokio::time::sleep;
+use tokio::{sync::mpsc::Sender, time::sleep};
 
 // slot update subscription loop that attempts to maintain a connection to an RPC server
 pub async fn slot_subscribe_loop(pubsub_addr: String, slot_sender: Sender<Slot>) {

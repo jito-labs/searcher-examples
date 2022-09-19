@@ -1,49 +1,56 @@
 mod event_loops;
 
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
-use std::time::Instant;
-use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::{hash_map::Entry, HashMap, HashSet},
+    path::Path,
+    result,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use crate::event_loops::{block_subscribe_loop, pending_tx_loop, slot_subscribe_loop};
 use clap::Parser;
 use env_logger::TimestampPrecision;
 use histogram::Histogram;
-use jito_protos::bundle::Bundle;
-use jito_protos::convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet};
-use jito_protos::searcher::{
-    searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
-    NextScheduledLeaderRequest, PendingTxNotification, SendBundleRequest, SendBundleResponse,
+use jito_protos::{
+    bundle::Bundle,
+    convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet},
+    searcher::{
+        searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
+        NextScheduledLeaderRequest, PendingTxNotification, SendBundleRequest, SendBundleResponse,
+    },
 };
 use log::*;
-use rand::rngs::ThreadRng;
-use rand::{thread_rng, Rng};
-use searcher_service_client::token_authenticator::ClientInterceptor;
-use searcher_service_client::{get_searcher_client, BlockEngineConnectionError};
-use solana_client::client_error::ClientError;
-use solana_client::nonblocking::pubsub_client::PubsubClientError;
-use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_response;
-use solana_client::rpc_response::RpcBlockUpdate;
+use rand::{rngs::ThreadRng, thread_rng, Rng};
+use searcher_service_client::{
+    get_searcher_client, token_authenticator::ClientInterceptor, BlockEngineConnectionError,
+};
+use solana_client::{
+    client_error::ClientError,
+    nonblocking::{pubsub_client::PubsubClientError, rpc_client::RpcClient},
+    rpc_response,
+    rpc_response::RpcBlockUpdate,
+};
 use solana_metrics::{datapoint_info, set_host_id};
-use solana_sdk::clock::Slot;
-use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
-use solana_sdk::hash::Hash;
-use solana_sdk::signature::{Signature, Signer};
-use solana_sdk::system_instruction::transfer;
-use solana_sdk::transaction::Transaction;
-use solana_sdk::transaction::VersionedTransaction;
 use solana_sdk::{
+    clock::Slot,
+    commitment_config::{CommitmentConfig, CommitmentLevel},
+    hash::Hash,
     pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair},
+    signature::{read_keypair_file, Keypair, Signature, Signer},
+    system_instruction::transfer,
+    transaction::{Transaction, VersionedTransaction},
 };
 use spl_memo::build_memo;
 use thiserror::Error;
-use tokio::sync::mpsc::{channel, Receiver};
-use tokio::{runtime::Builder, time::interval};
-use tonic::codegen::InterceptedService;
-use tonic::transport::Channel;
-use tonic::{Response, Status};
+use tokio::{
+    runtime::Builder,
+    sync::mpsc::{channel, Receiver},
+    time::interval,
+};
+use tonic::{codegen::InterceptedService, transport::Channel, Response, Status};
+
+use crate::event_loops::{block_subscribe_loop, pending_tx_loop, slot_subscribe_loop};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -236,11 +243,15 @@ async fn maintenance_tick(
         .get_next_scheduled_leader(NextScheduledLeaderRequest {})
         .await?
         .into_inner();
-    info!(
-        "next_scheduled_leader: {} in {} slots",
-        next_scheduled_leader.next_leader_identity,
-        next_scheduled_leader.next_leader_slot - next_scheduled_leader.current_slot
-    );
+    if next_scheduled_leader.next_leader_slot > 0 {
+        info!(
+            "next_scheduled_leader: {} in {} slots",
+            next_scheduled_leader.next_leader_identity,
+            next_scheduled_leader.next_leader_slot - next_scheduled_leader.current_slot
+        );
+    } else {
+        info!("no next scheduled leader");
+    }
 
     Ok(())
 }
