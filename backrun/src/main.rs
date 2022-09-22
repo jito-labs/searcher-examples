@@ -572,7 +572,7 @@ fn main() -> Result<()> {
     let payer_keypair =
         Arc::new(read_keypair_file(Path::new(&args.payer_keypair)).expect("parse kp file"));
     let auth_keypair =
-        Arc::new(read_keypair_file(Path::new(&args.payer_keypair)).expect("parse kp file"));
+        Arc::new(read_keypair_file(Path::new(&args.auth_keypair)).expect("parse kp file"));
 
     set_host_id(auth_keypair.pubkey().to_string());
 
