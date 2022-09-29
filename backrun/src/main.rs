@@ -430,9 +430,9 @@ fn print_block_stats(
                     ),
                 );
 
-                // leaders last slot, clear everything out
-                // might mess up metrics if leader doesn't produce a last slot or there's lots of slots
-                // close to each other
+                // Clear out old stats
+                block_stats.retain(|slot, _| *slot > block.context.slot);
+
                 if block.context.slot % 4 == 3 {
                     block_stats.clear();
                 }
