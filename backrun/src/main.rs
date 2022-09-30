@@ -315,7 +315,7 @@ fn print_block_stats(
                 .collect();
 
             // bundles that were sent before or during this slot
-            let bundles_sent_before_slot: HashMap<Slot, BlockStats> = block_stats
+            let mut bundles_sent_before_slot: HashMap<Slot, BlockStats> = block_stats
                 .iter()
                 .filter(|(slot, _)| **slot <= block.context.slot)
                 .map(|(slot, stats)| (*slot, stats.clone()))
@@ -341,7 +341,7 @@ fn print_block_stats(
                     .sum();
 
                 // a list of all bundles landed this slot that were sent before or during this slot
-                let bundles_landed: Vec<(Slot, &BundledTransactions, usize)> =
+                let bundles_landed: Vec<(Slot, BundledTransactions, usize)> =
                     bundles_sent_before_slot
                         .iter()
                         .flat_map(|(slot, stats)| {
@@ -349,7 +349,7 @@ fn print_block_stats(
                                 .bundles_sent
                                 .iter()
                                 .enumerate()
-                                .filter(|(index, (_, send_response))| send_response.is_ok())
+                                .filter(|(_, (_, send_response))| send_response.is_ok())
                                 .filter_map(|(index, (bundle_sent, _))| {
                                     if bundle_sent
                                         .backrun_txs
@@ -357,7 +357,7 @@ fn print_block_stats(
                                         .chain(bundle_sent.mempool_txs.iter())
                                         .all(|tx| block_signatures.contains(&tx.signatures[0]))
                                     {
-                                        Some((*slot, bundle_sent, index))
+                                        Some((*slot, bundle_sent.clone(), index))
                                     } else {
                                         None
                                     }
@@ -365,33 +365,7 @@ fn print_block_stats(
                         })
                         .collect();
 
-                // let mut bundles_not_processed: HashMap<Slot, BlockStats> = bundles_sent_before_slot
-                //     .iter()
-                //     .map(|(slot, stats)| {
-                //         let filt_stats = BlockStats {
-                //             bundles_sent: stats
-                //                 .bundles_sent
-                //                 .iter()
-                //                 .enumerate()
-                //                 .filter_map(|(index, (bund, res))| {
-                //                     if bundles_landed.contains(&(*slot, *bund, index)) {}
-                //                     Some((bund.clone(), res.clone()))
-                //                 })
-                //                 .collect(),
-                //             send_elapsed: stats.send_elapsed,
-                //             send_rt_per_packet: stats.send_rt_per_packet.clone(),
-                //         };
-                //         (*slot, filt_stats)
-                //     })
-                //     .collect();
-
-                for bundle in bundles_landed.iter() {
-                    bundles_sent_before_slot.entry(bundle.0).and_modify(|b| {
-                        b.bundles_sent.remove(bundle.2);
-                    });
-                }
-
-                let mempool_txs_landed_no_bundle: Vec<(Slot, &BundledTransactions)> =
+                let mempool_txs_landed_no_bundle: Vec<(Slot, BundledTransactions, usize)> =
                     bundles_sent_before_slot
                         .iter()
                         .flat_map(|(slot, stats)| {
@@ -399,7 +373,7 @@ fn print_block_stats(
                                 .bundles_sent
                                 .iter()
                                 .enumerate()
-                                .filter(|(index, (_, send_response))| send_response.is_ok())
+                                .filter(|(_, (_, send_response))| send_response.is_ok())
                                 .filter_map(|(index, (bundle_sent, _))| {
                                     if bundle_sent
                                         .mempool_txs
@@ -410,13 +384,22 @@ fn print_block_stats(
                                             .iter()
                                             .any(|tx| block_signatures.contains(&tx.signatures[0]))
                                     {
-                                        Some((*slot, bundle_sent))
+                                        Some((*slot, bundle_sent.clone(), index))
                                     } else {
                                         None
                                     }
                                 })
                         })
                         .collect();
+
+                for bundle in bundles_landed
+                    .iter()
+                    .chain(mempool_txs_landed_no_bundle.iter())
+                {
+                    bundles_sent_before_slot.entry(bundle.0).and_modify(|b| {
+                        b.bundles_sent.remove(bundle.2);
+                    });
+                }
 
                 // find the min and max distance from when the bundle was sent to what block it landed in
                 let min_bundle_send_slot = bundles_landed
@@ -458,7 +441,6 @@ fn print_block_stats(
                 );
 
                 // Clear out all stats before this slot
-                // ToDo (JL): This may be unnecessary since block stats are moved out above
                 block_stats.retain(|slot, _| *slot > block.context.slot);
                 // Add back any bundles that didn't land or have their mempool tx land
                 block_stats.extend(bundles_sent_before_slot)
