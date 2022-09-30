@@ -2,6 +2,7 @@ mod event_loops;
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use std::time::Instant;
 use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
 
@@ -107,11 +108,11 @@ struct BundledTransactions {
     backrun_txs: Vec<VersionedTransaction>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct BlockStats {
     bundles_sent: Vec<(
         BundledTransactions,
-        result::Result<Response<SendBundleResponse>, Status>,
+        Rc<result::Result<Response<SendBundleResponse>, Status>>,
     )>,
     send_elapsed: u64,
     send_rt_per_packet: Histogram,
@@ -317,7 +318,7 @@ fn print_block_stats(
             let bundles_sent_before_slot: HashMap<Slot, BlockStats> = block_stats
                 .iter()
                 .filter(|(slot, _)| **slot <= block.context.slot)
-                .map(|(&slot, &stats)| (slot, stats))
+                .map(|(slot, stats)| (*slot, stats.clone()))
                 .collect();
 
             if let Some(leader) = maybe_leader {
@@ -340,34 +341,55 @@ fn print_block_stats(
                     .sum();
 
                 // a list of all bundles landed this slot that were sent before or during this slot
-                let bundles_landed: Vec<(Slot, &BundledTransactions)> = bundles_sent_before_slot
-                    .iter()
-                    .flat_map(|(slot, stats)| {
-                        stats
-                            .bundles_sent
-                            .iter()
-                            .enumerate()
-                            .filter(|(index, (_, send_response))| send_response.is_ok())
-                            .filter_map(|(index, (bundle_sent, _))| {
-                                if bundle_sent
-                                    .backrun_txs
-                                    .iter()
-                                    .chain(bundle_sent.mempool_txs.iter())
-                                    .all(|tx| block_signatures.contains(&tx.signatures[0]))
-                                {
-                                    // Remove From Stats
-                                    if let Some(&(mut slot_stats)) =
-                                        bundles_sent_before_slot.get(slot)
+                let bundles_landed: Vec<(Slot, &BundledTransactions, usize)> =
+                    bundles_sent_before_slot
+                        .iter()
+                        .flat_map(|(slot, stats)| {
+                            stats
+                                .bundles_sent
+                                .iter()
+                                .enumerate()
+                                .filter(|(index, (_, send_response))| send_response.is_ok())
+                                .filter_map(|(index, (bundle_sent, _))| {
+                                    if bundle_sent
+                                        .backrun_txs
+                                        .iter()
+                                        .chain(bundle_sent.mempool_txs.iter())
+                                        .all(|tx| block_signatures.contains(&tx.signatures[0]))
                                     {
-                                        slot_stats.bundles_sent.remove(index);
+                                        Some((*slot, bundle_sent, index))
+                                    } else {
+                                        None
                                     }
-                                    Some((*slot, bundle_sent))
-                                } else {
-                                    None
-                                }
-                            })
-                    })
-                    .collect();
+                                })
+                        })
+                        .collect();
+
+                // let mut bundles_not_processed: HashMap<Slot, BlockStats> = bundles_sent_before_slot
+                //     .iter()
+                //     .map(|(slot, stats)| {
+                //         let filt_stats = BlockStats {
+                //             bundles_sent: stats
+                //                 .bundles_sent
+                //                 .iter()
+                //                 .enumerate()
+                //                 .filter_map(|(index, (bund, res))| {
+                //                     if bundles_landed.contains(&(*slot, *bund, index)) {}
+                //                     Some((bund.clone(), res.clone()))
+                //                 })
+                //                 .collect(),
+                //             send_elapsed: stats.send_elapsed,
+                //             send_rt_per_packet: stats.send_rt_per_packet.clone(),
+                //         };
+                //         (*slot, filt_stats)
+                //     })
+                //     .collect();
+
+                for bundle in bundles_landed.iter() {
+                    bundles_sent_before_slot.entry(bundle.0).and_modify(|b| {
+                        b.bundles_sent.remove(bundle.2);
+                    });
+                }
 
                 let mempool_txs_landed_no_bundle: Vec<(Slot, &BundledTransactions)> =
                     bundles_sent_before_slot
@@ -388,12 +410,6 @@ fn print_block_stats(
                                             .iter()
                                             .any(|tx| block_signatures.contains(&tx.signatures[0]))
                                     {
-                                        // Remove From Stats
-                                        if let Some(&(mut slot_stats)) =
-                                            bundles_sent_before_slot.get(slot)
-                                        {
-                                            slot_stats.bundles_sent.remove(index);
-                                        }
                                         Some((*slot, bundle_sent))
                                     } else {
                                         None
@@ -405,12 +421,12 @@ fn print_block_stats(
                 // find the min and max distance from when the bundle was sent to what block it landed in
                 let min_bundle_send_slot = bundles_landed
                     .iter()
-                    .map(|(slot, _)| *slot)
+                    .map(|(slot, _, _)| *slot)
                     .min()
                     .unwrap_or(0);
                 let max_bundle_send_slot = bundles_landed
                     .iter()
-                    .map(|(slot, _)| *slot)
+                    .map(|(slot, _, _)| *slot)
                     .max()
                     .unwrap_or(0);
 
@@ -450,8 +466,9 @@ fn print_block_stats(
                 // figure out how many transactions in bundles landed in slots other than our leader
                 let num_mempool_txs_landed: usize = bundles_sent_before_slot
                     .iter()
-                    .map(|(_, bundles)| {
-                        bundles
+                    .map(|(_, stats)| {
+                        stats
+                            .bundles_sent
                             .iter()
                             .filter(|(bundle, _)| {
                                 bundle
@@ -544,7 +561,7 @@ async fn run_searcher_loop(
                         match block_stats.entry(highest_slot) {
                             Entry::Occupied(mut entry) => {
                                 let mut stats = entry.get_mut();
-                                stats.bundles_sent.extend(bundles.into_iter().zip(results.into_iter()));
+                                stats.bundles_sent.extend(bundles.into_iter().zip(results.into_iter().map(|r| Rc::new(r))));
                                 stats.send_elapsed += send_elapsed;
                                 let _ = stats.send_rt_per_packet.increment(send_rt_pp_us);
                             }
@@ -552,7 +569,7 @@ async fn run_searcher_loop(
                                 let mut send_rt_per_packet = Histogram::new();
                                 let _ = send_rt_per_packet.increment(send_rt_pp_us);
                                 entry.insert(BlockStats {
-                                    bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
+                                    bundles_sent: bundles.into_iter().zip(results.into_iter().map(|r| Rc::new(r))).collect(),
                                     send_elapsed: send_elapsed,
                                     send_rt_per_packet
                                 });
