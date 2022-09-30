@@ -246,6 +246,121 @@ async fn maintenance_tick(
     Ok(())
 }
 
+fn print_block_stats_new(
+    block_stats: &mut HashMap<Slot, BlockStats>,
+    block: rpc_response::Response<RpcBlockUpdate>,
+    leader_schedule: &HashMap<Pubkey, HashSet<Slot>>,
+    block_signatures: &mut HashMap<Slot, HashSet<Signature>>,
+) {
+    const KEEP_SIGS_SLOTS: u64 = 20;
+
+    if let Some(stats) = block_stats.get(&block.context.slot) {
+        datapoint_info!(
+            "bundles-sent",
+            ("slot", block.context.slot, i64),
+            ("bundles", stats.bundles_sent.len(), i64),
+            ("total_send_elapsed_us", stats.send_elapsed, i64),
+            (
+                "sent_rt_pp_min",
+                stats.send_rt_per_packet.minimum().unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_min",
+                stats.send_rt_per_packet.maximum().unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_avg",
+                stats.send_rt_per_packet.mean().unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_p50",
+                stats
+                    .send_rt_per_packet
+                    .percentile(50.0)
+                    .unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_p90",
+                stats
+                    .send_rt_per_packet
+                    .percentile(90.0)
+                    .unwrap_or_default(),
+                i64
+            ),
+            (
+                "sent_rt_pp_p95",
+                stats
+                    .send_rt_per_packet
+                    .percentile(95.0)
+                    .unwrap_or_default(),
+                i64
+            ),
+        );
+    }
+
+    let maybe_leader = leader_schedule
+        .iter()
+        .find(|(_, slots)| slots.contains(&block.context.slot))
+        .map(|(leader, _)| leader);
+
+    if let Some(b) = &block.value.block {
+        if let Some(sigs) = &b.signatures {
+            let block_signatures: HashSet<Signature> = sigs
+                .iter()
+                .map(|s| Signature::from_str(&s).unwrap())
+                .collect();
+
+            if let Some(leader) = maybe_leader {
+                let mut num_bundles_sent: usize = 0;
+                let mut num_bundles_sent_ok: usize = 0;
+                let mut slots_landed: Vec<(Slot)> = vec![];
+                for (slot, stats) in block_stats
+                    .iter_mut()
+                    .filter(|&(slot, _)| *slot <= block.context.slot)
+                {
+                    num_bundles_sent += stats.bundles_sent.len();
+                    num_bundles_sent_ok += stats
+                        .bundles_sent
+                        .iter()
+                        .filter(|(_, send_response)| send_response.is_ok())
+                        .count();
+
+                    stats.bundles_sent = stats
+                        .bundles_sent
+                        .iter()
+                        .filter(|(bundle_sent, send_response)| {
+                            if send_response.is_ok() {
+                                if bundle_sent
+                                    .backrun_txs
+                                    .iter()
+                                    .chain(bundle_sent.mempool_txs.iter())
+                                    .all(|tx| block_signatures.contains(&tx.signatures[0]))
+                                {
+                                    slots_landed.push(*slot);
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        })
+                        .map(|b| b.clone())
+                        .collect();
+                }
+
+                // find the min and max distance from when the bundle was sent to what block it landed in
+                let min_bundle_send_slot = slots_landed.iter().map(|slot| *slot).min().unwrap_or(0);
+                let max_bundle_send_slot = slots_landed.iter().map(|slot| *slot).max().unwrap_or(0);
+            }
+        }
+    }
+}
+
 fn print_block_stats(
     block_stats: &mut HashMap<Slot, BlockStats>,
     block: rpc_response::Response<RpcBlockUpdate>,
