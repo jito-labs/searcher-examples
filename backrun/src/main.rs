@@ -246,7 +246,7 @@ async fn maintenance_tick(
     Ok(())
 }
 
-fn print_block_stats_new(
+fn print_block_stats(
     block_stats: &mut HashMap<Slot, BlockStats>,
     block: rpc_response::Response<RpcBlockUpdate>,
     leader_schedule: &HashMap<Pubkey, HashSet<Slot>>,
@@ -317,7 +317,8 @@ fn print_block_stats_new(
             if let Some(leader) = maybe_leader {
                 let mut num_bundles_sent: usize = 0;
                 let mut num_bundles_sent_ok: usize = 0;
-                let mut slots_landed: Vec<(Slot)> = vec![];
+                let mut bundle_slots_landed: Vec<Slot> = vec![];
+                let mut mempool_tx_slots_no_bundle: Vec<Slot> = vec![];
                 for (slot, stats) in block_stats
                     .iter_mut()
                     .filter(|&(slot, _)| *slot <= block.context.slot)
@@ -340,10 +341,21 @@ fn print_block_stats_new(
                                     .chain(bundle_sent.mempool_txs.iter())
                                     .all(|tx| block_signatures.contains(&tx.signatures[0]))
                                 {
-                                    slots_landed.push(*slot);
-                                    true
-                                } else {
+                                    bundle_slots_landed.push(*slot);
                                     false
+                                } else if bundle_sent
+                                    .mempool_txs
+                                    .iter()
+                                    .any(|tx| block_signatures.contains(&tx.signatures[0]))
+                                    && !bundle_sent
+                                        .backrun_txs
+                                        .iter()
+                                        .any(|tx| block_signatures.contains(&tx.signatures[0]))
+                                {
+                                    mempool_tx_slots_no_bundle.push(*slot);
+                                    false
+                                } else {
+                                    true
                                 }
                             } else {
                                 false
@@ -354,177 +366,14 @@ fn print_block_stats_new(
                 }
 
                 // find the min and max distance from when the bundle was sent to what block it landed in
-                let min_bundle_send_slot = slots_landed.iter().map(|slot| *slot).min().unwrap_or(0);
-                let max_bundle_send_slot = slots_landed.iter().map(|slot| *slot).max().unwrap_or(0);
-            }
-        }
-    }
-}
-
-fn print_block_stats(
-    block_stats: &mut HashMap<Slot, BlockStats>,
-    block: rpc_response::Response<RpcBlockUpdate>,
-    leader_schedule: &HashMap<Pubkey, HashSet<Slot>>,
-    block_signatures: &mut HashMap<Slot, HashSet<Signature>>,
-) {
-    const KEEP_SIGS_SLOTS: u64 = 20;
-
-    if let Some(stats) = block_stats.get(&block.context.slot) {
-        datapoint_info!(
-            "bundles-sent",
-            ("slot", block.context.slot, i64),
-            ("bundles", stats.bundles_sent.len(), i64),
-            ("total_send_elapsed_us", stats.send_elapsed, i64),
-            (
-                "sent_rt_pp_min",
-                stats.send_rt_per_packet.minimum().unwrap_or_default(),
-                i64
-            ),
-            (
-                "sent_rt_pp_min",
-                stats.send_rt_per_packet.maximum().unwrap_or_default(),
-                i64
-            ),
-            (
-                "sent_rt_pp_avg",
-                stats.send_rt_per_packet.mean().unwrap_or_default(),
-                i64
-            ),
-            (
-                "sent_rt_pp_p50",
-                stats
-                    .send_rt_per_packet
-                    .percentile(50.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "sent_rt_pp_p90",
-                stats
-                    .send_rt_per_packet
-                    .percentile(90.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "sent_rt_pp_p95",
-                stats
-                    .send_rt_per_packet
-                    .percentile(95.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-        );
-    }
-
-    let maybe_leader = leader_schedule
-        .iter()
-        .find(|(_, slots)| slots.contains(&block.context.slot))
-        .map(|(leader, _)| leader);
-
-    if let Some(b) = &block.value.block {
-        if let Some(sigs) = &b.signatures {
-            let block_signatures: HashSet<Signature> = sigs
-                .iter()
-                .map(|s| Signature::from_str(&s).unwrap())
-                .collect();
-
-            // bundles that were sent before or during this slot
-            let mut bundles_sent_before_slot: HashMap<Slot, BlockStats> = block_stats
-                .iter()
-                .filter(|(slot, _)| **slot <= block.context.slot)
-                .map(|(slot, stats)| (*slot, stats.clone()))
-                .collect();
-
-            if let Some(leader) = maybe_leader {
-                // number of bundles sent before or during this slot
-                let num_bundles_sent: usize = bundles_sent_before_slot
+                let min_bundle_send_slot = bundle_slots_landed
                     .iter()
-                    .map(|(_, stats)| stats.bundles_sent.len())
-                    .sum();
-
-                // number of bundles where sending returned ok
-                let num_bundles_sent_ok: usize = bundles_sent_before_slot
-                    .iter()
-                    .map(|(_, stats)| {
-                        stats
-                            .bundles_sent
-                            .iter()
-                            .filter(|(_, send_response)| send_response.is_ok())
-                            .count()
-                    })
-                    .sum();
-
-                // a list of all bundles landed this slot that were sent before or during this slot
-                let bundles_landed: Vec<(Slot, BundledTransactions, usize)> =
-                    bundles_sent_before_slot
-                        .iter()
-                        .flat_map(|(slot, stats)| {
-                            stats
-                                .bundles_sent
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, (_, send_response))| send_response.is_ok())
-                                .filter_map(|(index, (bundle_sent, _))| {
-                                    if bundle_sent
-                                        .backrun_txs
-                                        .iter()
-                                        .chain(bundle_sent.mempool_txs.iter())
-                                        .all(|tx| block_signatures.contains(&tx.signatures[0]))
-                                    {
-                                        Some((*slot, bundle_sent.clone(), index))
-                                    } else {
-                                        None
-                                    }
-                                })
-                        })
-                        .collect();
-
-                let mempool_txs_landed_no_bundle: Vec<(Slot, BundledTransactions, usize)> =
-                    bundles_sent_before_slot
-                        .iter()
-                        .flat_map(|(slot, stats)| {
-                            stats
-                                .bundles_sent
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, (_, send_response))| send_response.is_ok())
-                                .filter_map(|(index, (bundle_sent, _))| {
-                                    if bundle_sent
-                                        .mempool_txs
-                                        .iter()
-                                        .any(|tx| block_signatures.contains(&tx.signatures[0]))
-                                        && !bundle_sent
-                                            .backrun_txs
-                                            .iter()
-                                            .any(|tx| block_signatures.contains(&tx.signatures[0]))
-                                    {
-                                        Some((*slot, bundle_sent.clone(), index))
-                                    } else {
-                                        None
-                                    }
-                                })
-                        })
-                        .collect();
-
-                for bundle in bundles_landed
-                    .iter()
-                    .chain(mempool_txs_landed_no_bundle.iter())
-                {
-                    bundles_sent_before_slot.entry(bundle.0).and_modify(|b| {
-                        b.bundles_sent.remove(bundle.2);
-                    });
-                }
-
-                // find the min and max distance from when the bundle was sent to what block it landed in
-                let min_bundle_send_slot = bundles_landed
-                    .iter()
-                    .map(|(slot, _, _)| *slot)
+                    .map(|slot| *slot)
                     .min()
                     .unwrap_or(0);
-                let max_bundle_send_slot = bundles_landed
+                let max_bundle_send_slot = bundle_slots_landed
                     .iter()
-                    .map(|(slot, _, _)| *slot)
+                    .map(|slot| *slot)
                     .max()
                     .unwrap_or(0);
 
@@ -540,42 +389,49 @@ fn print_block_stats(
                         num_bundles_sent - num_bundles_sent_ok,
                         i64
                     ),
-                    ("num_bundles_landed", bundles_landed.len(), i64),
+                    ("num_bundles_landed", bundle_slots_landed.len(), i64),
                     (
                         "num_bundles_dropped",
-                        num_bundles_sent - bundles_landed.len(),
+                        num_bundles_sent - bundle_slots_landed.len(),
                         i64
                     ),
                     ("min_bundle_send_slot", min_bundle_send_slot, i64),
                     ("max_bundle_send_slot", max_bundle_send_slot, i64),
                     (
                         "mempool_txs_landed_no_bundle",
-                        mempool_txs_landed_no_bundle.len(),
+                        mempool_tx_slots_no_bundle.len(),
                         i64
                     ),
                 );
 
-                // Clear out all stats before this slot
-                block_stats.retain(|slot, _| *slot > block.context.slot);
-                // Add back any bundles that didn't land or have their mempool tx land
-                block_stats.extend(bundles_sent_before_slot)
-            } else {
-                // figure out how many transactions in bundles landed in slots other than our leader
-                let num_mempool_txs_landed: usize = bundles_sent_before_slot
+                // Clear out empty stats
+                *block_stats = block_stats
                     .iter()
-                    .map(|(_, stats)| {
-                        stats
-                            .bundles_sent
-                            .iter()
-                            .filter(|(bundle, _)| {
-                                bundle
-                                    .mempool_txs
-                                    .iter()
-                                    .any(|tx| block_signatures.contains(&tx.signatures[0]))
-                            })
-                            .count()
+                    .filter_map(|(slot, stats)| {
+                        if stats.bundles_sent.is_empty() {
+                            None
+                        } else {
+                            Some((*slot, stats.clone()))
+                        }
                     })
-                    .sum();
+                    .collect();
+            } else {
+                let mut num_mempool_txs_landed = 0;
+                for (_, stats) in block_stats
+                    .iter_mut()
+                    .filter(|&(slot, _)| *slot <= block.context.slot)
+                {
+                    num_mempool_txs_landed += stats
+                        .bundles_sent
+                        .iter()
+                        .filter(|(bundle, _)| {
+                            bundle
+                                .mempool_txs
+                                .iter()
+                                .any(|tx| block_signatures.contains(&tx.signatures[0]))
+                        })
+                        .count()
+                }
                 if num_mempool_txs_landed > 0 {
                     datapoint_info!(
                         "non-leader-bundle-stats",
