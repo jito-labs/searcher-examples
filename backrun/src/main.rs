@@ -429,13 +429,8 @@ fn print_block_stats(
                         i64
                     ),
                 );
-
-                // leaders last slot, clear everything out
-                // might mess up metrics if leader doesn't produce a last slot or there's lots of slots
-                // close to each other
-                if block.context.slot % 4 == 3 {
-                    block_stats.clear();
-                }
+                // Clear out old stats
+                block_stats.retain(|slot, _| *slot > block.context.slot);
             } else {
                 // figure out how many transactions in bundles landed in slots other than our leader
                 let num_mempool_txs_landed: usize = bundles_sent_before_slot
