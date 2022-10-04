@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn test_proto_to_packet() {
         let tx_before = VersionedTransaction::from(test_tx());
-        let tx_after = versioned_tx_from_packet(&proto_packet_from_versioned_tx(tx_before.clone()))
+        let tx_after = versioned_tx_from_packet(&proto_packet_from_versioned_tx(&tx_before))
             .expect("tx_after");
 
         assert_eq!(tx_before, tx_after);
