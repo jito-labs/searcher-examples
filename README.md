@@ -17,12 +17,8 @@ cargo b --release && \
     --backrun-accounts {account}
 ```
 
-## Connection
-Auth is on port 1005. Searcher is on port 1004.
-
-### Mainnet
-Amsterdam: https://block-engine.mainnet.amsterdam.jito.wtf
-Frankfurt: https://block-engine.mainnet.frankfurt.jito.wtf
+## Connecting
+Please check out https://jito-labs.gitbook.io/mev/systems/connecting for the most up-to-date information on block engines.
 
 ## Disclaimer
 Use this at your own risk. 
