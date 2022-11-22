@@ -5,6 +5,9 @@ An example program that backruns accounts with a 1 lamport transfer and a memo p
 
 ## Example:
 ```bash
+
+git submodule update --init --recursive
+
 cargo b --release && \
     RUST_LOG=info ./target/release/jito-backrun-example \
     --auth-addr http://{auth_addr}:1005 \
