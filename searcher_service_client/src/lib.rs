@@ -1,13 +1,19 @@
-use crate::token_authenticator::ClientInterceptor;
-use jito_protos::auth::auth_service_client::AuthServiceClient;
-use jito_protos::auth::Role;
-use jito_protos::searcher::searcher_service_client::SearcherServiceClient;
-use solana_sdk::signature::Keypair;
 use std::sync::Arc;
+
+use jito_protos::{
+    auth::{auth_service_client::AuthServiceClient, Role},
+    searcher::searcher_service_client::SearcherServiceClient,
+};
+use solana_sdk::signature::Keypair;
 use thiserror::Error;
-use tonic::codegen::InterceptedService;
-use tonic::transport::{Channel, Endpoint};
-use tonic::{transport, Status};
+use tonic::{
+    codegen::InterceptedService,
+    transport,
+    transport::{Channel, Endpoint},
+    Status,
+};
+
+use crate::token_authenticator::ClientInterceptor;
 
 pub mod token_authenticator;
 

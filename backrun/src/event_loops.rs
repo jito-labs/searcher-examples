@@ -1,21 +1,30 @@
+use std::{sync::Arc, time::Duration};
+
 use futures_util::StreamExt;
-use jito_protos::searcher::{PendingTxNotification, PendingTxSubscriptionRequest};
+use jito_protos::{
+    bundle::BundleResult,
+    searcher::{
+        PendingTxNotification, PendingTxSubscriptionRequest, SubscribeBundleResultsRequest,
+    },
+};
 use log::info;
 use searcher_service_client::get_searcher_client;
-use solana_client::nonblocking::pubsub_client::PubsubClient;
-use solana_client::rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter};
-use solana_client::rpc_response;
-use solana_client::rpc_response::{RpcBlockUpdate, SlotUpdate};
+use solana_client::{
+    nonblocking::pubsub_client::PubsubClient,
+    rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
+    rpc_response,
+    rpc_response::{RpcBlockUpdate, SlotUpdate},
+};
 use solana_metrics::{datapoint_error, datapoint_info};
-use solana_sdk::clock::Slot;
-use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
+use solana_sdk::{
+    clock::Slot,
+    commitment_config::{CommitmentConfig, CommitmentLevel},
+    pubkey::Pubkey,
+    signature::Keypair,
+};
 use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc::Sender;
-use tokio::time::sleep;
+use tokio::{sync::mpsc::Sender, time::sleep};
+use tonic::Streaming;
 
 // slot update subscription loop that attempts to maintain a connection to an RPC server
 pub async fn slot_subscribe_loop(pubsub_addr: String, slot_sender: Sender<Slot>) {
@@ -134,6 +143,75 @@ pub async fn block_subscribe_loop(
                     ("errors", connect_errors, i64),
                     ("error_str", e.to_string(), String)
                 );
+            }
+        }
+    }
+}
+
+// attempts to maintain connection to searcher service and stream bundle results over a channel
+pub async fn bundle_results_loop(
+    auth_addr: String,
+    searcher_addr: String,
+    auth_keypair: Arc<Keypair>,
+    bundle_results_sender: Sender<BundleResult>,
+) {
+    let mut connection_errors: usize = 0;
+    let mut response_errors: usize = 0;
+
+    loop {
+        sleep(Duration::from_millis(1000)).await;
+        match get_searcher_client(&auth_addr, &searcher_addr, &auth_keypair).await {
+            Ok(mut c) => match c
+                .subscribe_bundle_results(SubscribeBundleResultsRequest {})
+                .await
+            {
+                Ok(resp) => {
+                    consume_bundle_results_stream(resp.into_inner(), &bundle_results_sender).await;
+                }
+                Err(e) => {
+                    response_errors += 1;
+                    datapoint_error!(
+                        "searcher_bundle_results_error",
+                        ("errors", response_errors, i64),
+                        ("msg", e.to_string(), String)
+                    );
+                }
+            },
+            Err(e) => {
+                connection_errors += 1;
+                datapoint_error!(
+                    "searcher_bundle_results_error",
+                    ("errors", connection_errors, i64),
+                    ("msg", e.to_string(), String)
+                );
+            }
+        }
+    }
+}
+
+pub async fn consume_bundle_results_stream(
+    mut stream: Streaming<BundleResult>,
+    bundle_results_sender: &Sender<BundleResult>,
+) {
+    while let Some(maybe_msg) = stream.next().await {
+        match maybe_msg {
+            Ok(msg) => {
+                if let Err(e) = bundle_results_sender.send(msg).await {
+                    datapoint_error!(
+                        "searcher_bundle_results_error",
+                        ("errors", 1, i64),
+                        ("msg", e.to_string(), String)
+                    );
+                    return;
+                }
+            }
+            Err(e) => {
+                datapoint_error!(
+                    "searcher_bundle_results_error",
+                    ("errors", 1, i64),
+                    ("msg", e.to_string(), String)
+                );
+                return;
             }
         }
     }
