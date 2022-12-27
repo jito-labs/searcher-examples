@@ -16,12 +16,13 @@ cargo b --release && \
     --auth-keypair id.json \
     --pubsub-url ws://{RPC_URL}:8900 \
     --rpc-url http://{RPC_URL}:8899 \
-    --tip-program-id AeehMKWUfPDcuU2mnx7jyuHgr6NjyFvSxvjSnudgkQRo \
+    --tip-program-id {TIP_PROGRAM_ID} \
     --backrun-accounts {account}
 ```
 
 ## Connecting
 Please check out https://jito-labs.gitbook.io/mev/systems/connecting for the most up-to-date information on block engines.
+Please check out https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses for the most up-to-date tip program id.
 
 ## Disclaimer
 Use this at your own risk. 
