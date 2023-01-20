@@ -1,20 +1,26 @@
 use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
 use futures_util::StreamExt;
-use jito_protos::convert::versioned_tx_from_packet;
+use jito_protos::bundle::Bundle;
+use jito_protos::convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet};
 use jito_protos::searcher::searcher_service_client::SearcherServiceClient;
 use jito_protos::searcher::{
     ConnectedLeadersRequest, GetTipAccountsRequest, NextScheduledLeaderRequest,
-    PendingTxSubscriptionRequest,
+    PendingTxSubscriptionRequest, SendBundleRequest, SubscribeBundleResultsRequest,
 };
-use log::{info, LevelFilter};
+use log::{info, warn, LevelFilter};
 use searcher_service_client::client_with_auth::AuthInterceptor;
 use searcher_service_client::get_searcher_client;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::signature::read_keypair_file;
+use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Signer;
+use solana_sdk::signature::{read_keypair_file, Signature};
 use solana_sdk::system_instruction::transfer;
+use solana_sdk::transaction::Transaction;
 use solana_sdk::transaction::VersionedTransaction;
 use spl_memo::build_memo;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
@@ -68,7 +74,10 @@ enum Commands {
         num_txs: usize,
         /// Amount of lamports to tip in each transaction
         #[clap(long, required = true)]
-        lamports: usize,
+        lamports: u64,
+        /// One of the tip accounts
+        #[clap(long, required = true)]
+        tip_account: String,
     },
 }
 
@@ -172,8 +181,29 @@ async fn main() {
             message,
             num_txs,
             lamports,
+            tip_account,
         } => {
             let payer_keypair = read_keypair_file(payer).expect("reads keypair at path");
+            let tip_account = Pubkey::from_str(&tip_account).expect("valid pubkey for tip account");
+            let rpc_client = RpcClient::new(rpc_url);
+            let balance = rpc_client
+                .get_balance(&payer_keypair.pubkey())
+                .await
+                .expect("reads balance");
+
+            info!(
+                "payer public key: {:?} lamports: {:?}",
+                payer_keypair.pubkey(),
+                balance
+            );
+
+            let mut bundle_results_subscription = client
+                .subscribe_bundle_results(SubscribeBundleResultsRequest {})
+                .await
+                .expect("subscribe to bundle results")
+                .into_inner();
+
+            // wait for jito-solana leader slot
             let mut is_leader_slot = false;
             while !is_leader_slot {
                 let next_leader = client
@@ -184,31 +214,66 @@ async fn main() {
                 let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
                 is_leader_slot = num_slots <= 2;
                 info!("next jito leader slot in {} slots", num_slots);
-                sleep(Duration::from_millis(500));
+                sleep(Duration::from_millis(500)).await;
             }
 
-            let blockhash = RpcClient::new(rpc_url)
+            // build + sign the transactions
+            let blockhash = rpc_client
                 .get_latest_blockhash()
                 .await
                 .expect("get blockhash");
-
-            let tx = (0..num_txs)
+            let txs: Vec<_> = (0..num_txs)
                 .map(|i| {
                     VersionedTransaction::from(Transaction::new_signed_with_payer(
                         &[
-                            build_memo(
-                                format!("{}: {:?}", message, mempool_tx.signatures[0].to_string())
-                                    .as_bytes(),
-                                &[],
-                            ),
+                            build_memo(format!("jito bundle {}: {}", i, message).as_bytes(), &[]),
                             transfer(&payer_keypair.pubkey(), &tip_account, lamports),
                         ],
                         Some(&payer_keypair.pubkey()),
-                        &[payer_keypair],
+                        &[&payer_keypair],
                         blockhash.clone(),
-                    ));
+                    ))
                 })
                 .collect();
+
+            let signatures: Vec<Signature> = txs.iter().map(|tx| tx.signatures[0]).collect();
+            info!("transaction signatures: {:?}", signatures);
+
+            // convert them to packets + send over
+            let packets: Vec<_> = txs.iter().map(proto_packet_from_versioned_tx).collect();
+            let result = client
+                .send_bundle(SendBundleRequest {
+                    bundle: Some(Bundle {
+                        header: None,
+                        packets,
+                    }),
+                })
+                .await
+                .expect("sends bundle");
+
+            // grab uuid from block engine + wait for results
+            let uuid = result.into_inner().uuid;
+            info!("bundle sent uuid: {:?}", uuid);
+            info!("waiting for 5 seconds to hear results...");
+            while let Ok(Some(Ok(results))) =
+                timeout(Duration::from_secs(5), bundle_results_subscription.next()).await
+            {
+                info!("bundle results: {:?}", results);
+            }
+
+            let futs: Vec<_> = signatures
+                .iter()
+                .map(|sig| {
+                    rpc_client
+                        .get_signature_status_with_commitment(sig, CommitmentConfig::processed())
+                })
+                .collect();
+            let results = futures::future::join_all(futs).await;
+            if !results.iter().all(|r| matches!(r, Ok(Some(Ok(()))))) {
+                warn!("transactions in bundle did not land :(");
+            } else {
+                info!("bundle landed successfully!!");
+            }
         }
     }
 }

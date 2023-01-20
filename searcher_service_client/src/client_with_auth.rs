@@ -1,16 +1,13 @@
-use crate::BlockEngineConnectionResult;
 use jito_protos::auth::auth_service_client::AuthServiceClient;
 use jito_protos::auth::{
     GenerateAuthChallengeRequest, GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
 };
-use jito_protos::searcher::searcher_service_client::SearcherServiceClient;
 use log::info;
 use solana_sdk::signature::Signer;
 use solana_sdk::signer::keypair::Keypair;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Handle;
-use tonic::codegen::InterceptedService;
 use tonic::service::Interceptor;
 use tonic::transport::Channel;
 use tonic::transport::Endpoint;
