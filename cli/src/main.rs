@@ -61,7 +61,6 @@ enum Commands {
         /// RPC URL
         #[clap(long, required = true)]
         rpc_url: String,
-
         /// Filepath to keypair that can afford the transaction payments with 1 lamport tip
         #[clap(long, required = true)]
         payer: String,

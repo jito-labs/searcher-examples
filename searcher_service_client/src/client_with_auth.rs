@@ -7,7 +7,7 @@ use jito_protos::auth::{
     auth_service_client::AuthServiceClient, GenerateAuthChallengeRequest,
     GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
 };
-use log::info;
+use log::{error, info};
 use solana_sdk::{signature::Signer, signer::keypair::Keypair};
 use tokio::runtime::Handle;
 use tonic::{
@@ -38,46 +38,54 @@ impl AuthInterceptor {
         }
     }
 
-    pub async fn maybe_auth(&mut self) -> Result<(), Status> {
-        match (self.needs_auth(), self.needs_refresh()) {
-            (true, _) => {
-                info!("performing challenge-response authentication");
+    pub async fn full_auth(&mut self) -> Result<(), Status> {
+        info!("performing challenge-response authentication");
 
-                let (access_token, refresh_token) =
-                    Self::perform_challenge_response(&self.url, &self.auth_keypair).await?;
+        let (access_token, refresh_token) =
+            Self::perform_challenge_response(&self.url, &self.auth_keypair).await?;
 
+        self.access_token = Some(access_token.value);
+        let access_token_expiration = access_token.expires_at_utc.unwrap();
+        self.access_token_expiration_time = Duration::new(
+            access_token_expiration.seconds as u64,
+            access_token_expiration.nanos as u32,
+        );
+
+        self.refresh_token = Some(refresh_token.value);
+        let refresh_token_expiration = refresh_token.expires_at_utc.unwrap();
+        self.refresh_token_expiration_time = Duration::new(
+            refresh_token_expiration.seconds as u64,
+            refresh_token_expiration.nanos as u32,
+        );
+        Ok(())
+    }
+
+    pub async fn refresh_auth(&mut self) -> Result<(), Status> {
+        info!("refreshing authentication");
+        match Self::refresh_access_token(&self.url, &self.refresh_token.as_ref().unwrap()).await {
+            Ok(access_token) => {
                 self.access_token = Some(access_token.value);
                 let access_token_expiration = access_token.expires_at_utc.unwrap();
                 self.access_token_expiration_time = Duration::new(
                     access_token_expiration.seconds as u64,
                     access_token_expiration.nanos as u32,
                 );
-
-                self.refresh_token = Some(refresh_token.value);
-                let refresh_token_expiration = refresh_token.expires_at_utc.unwrap();
-                self.refresh_token_expiration_time = Duration::new(
-                    refresh_token_expiration.seconds as u64,
-                    refresh_token_expiration.nanos as u32,
-                );
+                Ok(())
             }
-            (_, true) => {
-                info!("refreshing access token");
-                let access_token =
-                    Self::refresh_access_token(&self.url, &self.refresh_token.as_ref().unwrap())
-                        .await?;
-
-                self.access_token = Some(access_token.value);
-                let access_token_expiration = access_token.expires_at_utc.unwrap();
-                self.access_token_expiration_time = Duration::new(
-                    access_token_expiration.seconds as u64,
-                    access_token_expiration.nanos as u32,
-                );
-            }
-            (false, false) => {
-                // nothing needed
+            Err(e) => {
+                error!("error refreshing authentication: {:?}", e);
+                info!("re-running authentication");
+                self.full_auth().await
             }
         }
-        Ok(())
+    }
+
+    pub async fn maybe_auth(&mut self) -> Result<(), Status> {
+        match (self.needs_auth(), self.needs_refresh()) {
+            (true, _) => self.full_auth().await,
+            (_, true) => self.refresh_auth().await,
+            (false, false) => Ok(()),
+        }
     }
 
     /// True if the access token needs refresh
