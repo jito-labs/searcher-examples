@@ -1,6 +1,4 @@
-use crate::token_authenticator::ClientInterceptor;
-use jito_protos::auth::auth_service_client::AuthServiceClient;
-use jito_protos::auth::Role;
+use crate::client_with_auth::AuthInterceptor;
 use jito_protos::searcher::searcher_service_client::SearcherServiceClient;
 use solana_sdk::signature::Keypair;
 use std::sync::Arc;
@@ -10,8 +8,7 @@ use tonic::codegen::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{transport, Status};
 
-pub mod new_client;
-pub mod token_authenticator;
+pub mod client_with_auth;
 
 #[derive(Debug, Error)]
 pub enum BlockEngineConnectionError {
@@ -26,30 +23,18 @@ pub enum BlockEngineConnectionError {
 pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;
 
 pub async fn get_searcher_client(
-    auth_addr: &str,
-    searcher_addr: &str,
+    block_engine_url: &str,
     auth_keypair: &Arc<Keypair>,
-) -> BlockEngineConnectionResult<
-    SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
-> {
-    let auth_channel = create_grpc_channel(auth_addr).await?;
-    let client_interceptor = ClientInterceptor::new(
-        AuthServiceClient::new(auth_channel),
-        &auth_keypair,
-        Role::Searcher,
-    )
-    .await?;
+) -> BlockEngineConnectionResult<SearcherServiceClient<InterceptedService<Channel, AuthInterceptor>>>
+{
+    let client_interceptor = AuthInterceptor::new(block_engine_url.to_string(), auth_keypair);
 
-    let searcher_channel = create_grpc_channel(searcher_addr).await?;
+    let searcher_channel = Endpoint::from_shared(block_engine_url.to_string())?
+        .tls_config(tonic::transport::ClientTlsConfig::new())?
+        .connect()
+        .await?;
     let searcher_client =
         SearcherServiceClient::with_interceptor(searcher_channel, client_interceptor);
-    Ok(searcher_client)
-}
 
-pub async fn create_grpc_channel(url: &str) -> BlockEngineConnectionResult<Channel> {
-    let mut endpoint = Endpoint::from_shared(url.to_string()).expect("invalid url");
-    if url.contains("https") {
-        endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new())?;
-    }
-    Ok(endpoint.connect().await?)
+    Ok(searcher_client)
 }

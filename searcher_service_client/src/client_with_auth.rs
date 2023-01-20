@@ -16,6 +16,7 @@ use tonic::transport::Channel;
 use tonic::transport::Endpoint;
 use tonic::{Request, Status};
 
+#[derive(Clone)]
 pub struct AuthInterceptor {
     url: String,
     auth_keypair: Arc<Keypair>,
@@ -176,21 +177,4 @@ impl Interceptor for AuthInterceptor {
 
         Ok(request)
     }
-}
-
-pub async fn get_searcher_client(
-    block_engine_url: &str,
-    auth_keypair: &Arc<Keypair>,
-) -> BlockEngineConnectionResult<SearcherServiceClient<InterceptedService<Channel, AuthInterceptor>>>
-{
-    let client_interceptor = AuthInterceptor::new(block_engine_url.to_string(), auth_keypair);
-
-    let searcher_channel = Endpoint::from_shared(block_engine_url.to_string())?
-        .tls_config(tonic::transport::ClientTlsConfig::new())?
-        .connect()
-        .await?;
-    let searcher_client =
-        SearcherServiceClient::with_interceptor(searcher_channel, client_interceptor);
-
-    Ok(searcher_client)
 }

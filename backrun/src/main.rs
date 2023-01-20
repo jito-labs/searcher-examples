@@ -18,7 +18,7 @@ use jito_protos::searcher::{
 use log::*;
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
-use searcher_service_client::token_authenticator::ClientInterceptor;
+use searcher_service_client::client_with_auth::AuthInterceptor;
 use searcher_service_client::{get_searcher_client, BlockEngineConnectionError};
 use solana_client::client_error::ClientError;
 use solana_client::nonblocking::pubsub_client::PubsubClientError;
@@ -50,11 +50,7 @@ use tonic::{Response, Status};
 struct Args {
     /// Address for auth service
     #[clap(long, env)]
-    auth_addr: String,
-
-    /// Address for searcher service
-    #[clap(long, env)]
-    searcher_addr: String,
+    block_engine_addr: String,
 
     /// Accounts to backrun
     #[clap(long, env)]
@@ -156,7 +152,7 @@ fn build_bundles(
 }
 
 async fn send_bundles(
-    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, AuthInterceptor>>,
     bundles: &[BundledTransactions],
 ) -> Result<Vec<result::Result<Response<SendBundleResponse>, Status>>> {
     let mut futs = vec![];
@@ -203,7 +199,7 @@ fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
 }
 
 async fn maintenance_tick(
-    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, AuthInterceptor>>,
     rpc_client: &RpcClient,
     leader_schedule: &mut HashMap<Pubkey, HashSet<Slot>>,
     blockhash: &mut Hash,
@@ -479,8 +475,7 @@ fn print_block_stats(
 }
 
 async fn run_searcher_loop(
-    auth_addr: String,
-    searcher_addr: String,
+    block_engine_addr: String,
     auth_keypair: Arc<Keypair>,
     keypair: &Keypair,
     rpc_url: String,
@@ -494,8 +489,7 @@ async fn run_searcher_loop(
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
     let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
 
-    let mut searcher_client =
-        get_searcher_client(&auth_addr, &searcher_addr, &auth_keypair).await?;
+    let mut searcher_client = get_searcher_client(&block_engine_addr, &auth_keypair).await?;
 
     let mut rng = thread_rng();
 
@@ -592,16 +586,14 @@ fn main() -> Result<()> {
         tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
         tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
         tokio::spawn(pending_tx_loop(
-            args.auth_addr.clone(),
-            args.searcher_addr.clone(),
+            args.block_engine_addr.clone(),
             auth_keypair.clone(),
             pending_tx_sender,
             backrun_pubkeys,
         ));
 
         let result = run_searcher_loop(
-            args.auth_addr,
-            args.searcher_addr,
+            args.block_engine_addr,
             auth_keypair,
             &payer_keypair,
             args.rpc_url,

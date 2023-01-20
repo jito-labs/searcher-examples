@@ -141,8 +141,7 @@ pub async fn block_subscribe_loop(
 
 // attempts to maintain connection to searcher service and stream pending transaction notifications over a channel
 pub async fn pending_tx_loop(
-    auth_addr: String,
-    searcher_addr: String,
+    block_engine_addr: String,
     auth_keypair: Arc<Keypair>,
     pending_tx_sender: Sender<PendingTxNotification>,
     backrun_pubkeys: Vec<Pubkey>,
@@ -157,7 +156,7 @@ pub async fn pending_tx_loop(
     loop {
         sleep(Duration::from_secs(1)).await;
 
-        match get_searcher_client(&auth_addr, &searcher_addr, &auth_keypair).await {
+        match get_searcher_client(&block_engine_addr, &auth_keypair).await {
             Ok(mut searcher_client) => {
                 match searcher_client
                     .subscribe_pending_transactions(PendingTxSubscriptionRequest {
