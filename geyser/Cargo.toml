@@ -1,0 +1,18 @@
+[package]
+name = "jito-geyser-cli"
+version = "0.0.1"
+authors = ["Jito Labs"]
+description = "Geyser testing"
+edition = "2021"
+publish = false
+
+[dependencies]
+clap = { version = "4.0.32", features = ["derive", "env"] }
+tonic = { version = "0.8.3", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+geyser-grpc-plugin-client = { git = "https://github.com/jito-foundation/geyser-grpc-plugin.git", branch = "master" }
+tokio = { version = "1.14.1", features = ["full"] }
+solana-client = "1.14.13"
+futures-util = "0.3.25"
+uuid = { version = "1.2.2", features = ["v4"] }
+solana-sdk = "1.14.13"
+prost-types = "0.11.6"
