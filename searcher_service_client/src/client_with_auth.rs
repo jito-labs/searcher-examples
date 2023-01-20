@@ -1,6 +1,6 @@
 use std::{
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use jito_protos::auth::{
@@ -22,8 +22,8 @@ pub struct AuthInterceptor {
     auth_keypair: Arc<Keypair>,
     access_token: Option<String>,
     refresh_token: Option<String>,
-    access_token_expiration_time: Duration,
-    refresh_token_expiration_time: Duration,
+    access_token_expiration_s: u64,  // seconds since epoch
+    refresh_token_expiration_s: u64, // seconds since epoch
 }
 
 impl AuthInterceptor {
@@ -33,8 +33,8 @@ impl AuthInterceptor {
             auth_keypair: auth_keypair.clone(),
             access_token: None,
             refresh_token: None,
-            access_token_expiration_time: Duration::default(),
-            refresh_token_expiration_time: Duration::default(),
+            access_token_expiration_s: 0,
+            refresh_token_expiration_s: 0,
         }
     }
 
@@ -45,18 +45,10 @@ impl AuthInterceptor {
             Self::perform_challenge_response(&self.url, &self.auth_keypair).await?;
 
         self.access_token = Some(access_token.value);
-        let access_token_expiration = access_token.expires_at_utc.unwrap();
-        self.access_token_expiration_time = Duration::new(
-            access_token_expiration.seconds as u64,
-            access_token_expiration.nanos as u32,
-        );
+        self.access_token_expiration_s = access_token.expires_at_utc.unwrap().seconds as u64;
 
         self.refresh_token = Some(refresh_token.value);
-        let refresh_token_expiration = refresh_token.expires_at_utc.unwrap();
-        self.refresh_token_expiration_time = Duration::new(
-            refresh_token_expiration.seconds as u64,
-            refresh_token_expiration.nanos as u32,
-        );
+        self.refresh_token_expiration_s = refresh_token.expires_at_utc.unwrap().seconds as u64;
         Ok(())
     }
 
@@ -65,11 +57,8 @@ impl AuthInterceptor {
         match Self::refresh_access_token(&self.url, &self.refresh_token.as_ref().unwrap()).await {
             Ok(access_token) => {
                 self.access_token = Some(access_token.value);
-                let access_token_expiration = access_token.expires_at_utc.unwrap();
-                self.access_token_expiration_time = Duration::new(
-                    access_token_expiration.seconds as u64,
-                    access_token_expiration.nanos as u32,
-                );
+                self.access_token_expiration_s =
+                    access_token.expires_at_utc.unwrap().seconds as u64;
                 Ok(())
             }
             Err(e) => {
@@ -90,13 +79,21 @@ impl AuthInterceptor {
 
     /// True if the access token needs refresh
     pub fn needs_refresh(&self) -> bool {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap() >= self.access_token_expiration_time
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            >= self.access_token_expiration_s
     }
 
     /// True if the refresh token has expired, at which point the entire authentication process
     /// needs to happen again.
     pub fn needs_auth(&self) -> bool {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap() >= self.refresh_token_expiration_time
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            >= self.refresh_token_expiration_s
     }
 
     /// Returns Ok((access_token, refresh_token))
