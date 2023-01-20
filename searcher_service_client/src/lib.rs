@@ -5,10 +5,12 @@ use jito_protos::searcher::searcher_service_client::SearcherServiceClient;
 use solana_sdk::signature::Keypair;
 use std::sync::Arc;
 use thiserror::Error;
+use tonic::codegen::http::uri::InvalidUri;
 use tonic::codegen::InterceptedService;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{transport, Status};
 
+pub mod new_client;
 pub mod token_authenticator;
 
 #[derive(Debug, Error)]
@@ -17,6 +19,8 @@ pub enum BlockEngineConnectionError {
     TransportError(#[from] transport::Error),
     #[error("client error {0}")]
     ClientError(#[from] Status),
+    #[error("Bad URI path {0}")]
+    InvalidUri(#[from] InvalidUri),
 }
 
 pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;

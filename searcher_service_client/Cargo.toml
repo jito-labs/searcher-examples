@@ -15,3 +15,4 @@ solana-sdk = "=1.11.2"
 thiserror = "1.0.34"
 tokio = "~1.14.1"
 tonic = "0.5.2"
+futures = { version = "0.3.25", features = ["executor"] }
