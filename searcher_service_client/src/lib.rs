@@ -1,12 +1,16 @@
-use crate::client_with_auth::AuthInterceptor;
+use std::sync::Arc;
+
 use jito_protos::searcher::searcher_service_client::SearcherServiceClient;
 use solana_sdk::signature::Keypair;
-use std::sync::Arc;
 use thiserror::Error;
-use tonic::codegen::http::uri::InvalidUri;
-use tonic::codegen::InterceptedService;
-use tonic::transport::{Channel, Endpoint};
-use tonic::{transport, Status};
+use tonic::{
+    codegen::{http::uri::InvalidUri, InterceptedService},
+    transport,
+    transport::{Channel, Endpoint},
+    Status,
+};
+
+use crate::client_with_auth::AuthInterceptor;
 
 pub mod client_with_auth;
 

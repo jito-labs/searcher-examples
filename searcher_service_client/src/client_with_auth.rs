@@ -1,17 +1,20 @@
-use jito_protos::auth::auth_service_client::AuthServiceClient;
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
 use jito_protos::auth::{
-    GenerateAuthChallengeRequest, GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
+    auth_service_client::AuthServiceClient, GenerateAuthChallengeRequest,
+    GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
 };
 use log::info;
-use solana_sdk::signature::Signer;
-use solana_sdk::signer::keypair::Keypair;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use solana_sdk::{signature::Signer, signer::keypair::Keypair};
 use tokio::runtime::Handle;
-use tonic::service::Interceptor;
-use tonic::transport::Channel;
-use tonic::transport::Endpoint;
-use tonic::{Request, Status};
+use tonic::{
+    service::Interceptor,
+    transport::{Channel, Endpoint},
+    Request, Status,
+};
 
 #[derive(Clone)]
 pub struct AuthInterceptor {
