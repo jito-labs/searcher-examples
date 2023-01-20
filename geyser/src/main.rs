@@ -145,7 +145,8 @@ async fn main() {
 fn calc_latency(ts: &Timestamp) -> Duration {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     let packet_ts = Duration::new(ts.seconds as u64, ts.nanos as u32);
-    now.checked_sub(packet_ts).unwrap_or_default()
+    now.checked_sub(packet_ts)
+        .unwrap_or_else(|| packet_ts.checked_sub(now).unwrap())
 }
 
 async fn print_account_updates(mut response: Streaming<MaybeAccountUpdate>) {
@@ -163,7 +164,7 @@ async fn print_account_updates(mut response: Streaming<MaybeAccountUpdate>) {
             Some(Msg::AccountUpdate(update)) => {
                 let latency = calc_latency(&update.ts.unwrap());
                 println!(
-                    "geyser response seq: {:?} slot: {:?} pubkey: {:?} latency: {:?}",
+                    "geyser response seq: {:?} slot: {:?} pubkey: {:?} skew: {:?}",
                     update.seq,
                     update.slot,
                     Pubkey::new(update.pubkey.as_slice()),
