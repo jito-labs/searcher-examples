@@ -6,13 +6,13 @@ description = "Wrapper around the generated gRPC. Adds auth and retry semantics.
 
 [dependencies]
 chrono = "0.4.19"
+futures = { version = "0.3.25", features = ["executor"] }
 jito-protos = { path = "../jito_protos" }
 log = "0.4.14"
 prost-types = "0.8.0"
 serde = "1.0.130"
-solana-metrics = "=1.11.2"
-solana-sdk = "=1.11.2"
+solana-metrics = "=1.14.13"
+solana-sdk = "=1.14.13"
 thiserror = "1.0.34"
 tokio = "~1.14.1"
 tonic = "0.5.2"
-futures = { version = "0.3.25", features = ["executor"] }
