@@ -21,7 +21,7 @@ use jito_protos::{
     },
 };
 use jito_searcher_client::{
-    auth_interceptor::AuthInterceptor, get_searcher_client, BlockEngineConnectionError,
+    get_searcher_client, token_authenticator::ClientInterceptor, BlockEngineConnectionError,
 };
 use log::*;
 use rand::{rngs::ThreadRng, thread_rng, Rng};
@@ -159,7 +159,7 @@ fn build_bundles(
 }
 
 async fn send_bundles(
-    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, AuthInterceptor>>,
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     bundles: &[BundledTransactions],
 ) -> Result<Vec<result::Result<Response<SendBundleResponse>, Status>>> {
     let mut futs = vec![];
@@ -206,7 +206,7 @@ fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
 }
 
 async fn maintenance_tick(
-    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, AuthInterceptor>>,
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     rpc_client: &RpcClient,
     leader_schedule: &mut HashMap<Pubkey, HashSet<Slot>>,
     blockhash: &mut Hash,

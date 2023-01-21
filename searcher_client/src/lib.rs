@@ -1,20 +1,21 @@
 use std::sync::Arc;
 
-use jito_protos::searcher::searcher_service_client::SearcherServiceClient;
+use jito_protos::{
+    auth::{auth_service_client::AuthServiceClient, Role},
+    searcher::searcher_service_client::SearcherServiceClient,
+};
 use solana_sdk::signature::Keypair;
 use thiserror::Error;
 use tonic::{
-    client,
-    codegen::{http::uri::InvalidUri, InterceptedService},
+    codegen::InterceptedService,
     transport,
     transport::{Channel, Endpoint},
     Status,
 };
-use tonic_async_interceptor::async_interceptor;
 
-use crate::auth_interceptor::AuthInterceptor;
+use crate::token_authenticator::ClientInterceptor;
 
-pub mod auth_interceptor;
+pub mod token_authenticator;
 
 #[derive(Debug, Error)]
 pub enum BlockEngineConnectionError {
@@ -22,8 +23,6 @@ pub enum BlockEngineConnectionError {
     TransportError(#[from] transport::Error),
     #[error("client error {0}")]
     ClientError(#[from] Status),
-    #[error("Bad URI path {0}")]
-    InvalidUri(#[from] InvalidUri),
 }
 
 pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;
@@ -31,17 +30,27 @@ pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;
 pub async fn get_searcher_client(
     block_engine_url: &str,
     auth_keypair: &Arc<Keypair>,
-) -> BlockEngineConnectionResult<SearcherServiceClient<InterceptedService<Channel, AuthInterceptor>>>
-{
-    let client_interceptor = AuthInterceptor::new(block_engine_url.to_string(), auth_keypair);
+) -> BlockEngineConnectionResult<
+    SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+> {
+    let auth_channel = create_grpc_channel(block_engine_url).await?;
+    let client_interceptor = ClientInterceptor::new(
+        AuthServiceClient::new(auth_channel),
+        &auth_keypair,
+        Role::Searcher,
+    )
+    .await?;
 
-    let searcher_channel = Endpoint::from_shared(block_engine_url.to_string())?
-        .tls_config(tonic::transport::ClientTlsConfig::new())?
-        .connect()
-        .await?;
-
+    let searcher_channel = create_grpc_channel(block_engine_url).await?;
     let searcher_client =
         SearcherServiceClient::with_interceptor(searcher_channel, client_interceptor);
-
     Ok(searcher_client)
+}
+
+pub async fn create_grpc_channel(url: &str) -> BlockEngineConnectionResult<Channel> {
+    let mut endpoint = Endpoint::from_shared(url.to_string()).expect("invalid url");
+    if url.contains("https") {
+        endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new())?;
+    }
+    Ok(endpoint.connect().await?)
 }

@@ -12,7 +12,7 @@ use jito_protos::{
         SendBundleRequest, SubscribeBundleResultsRequest,
     },
 };
-use jito_searcher_client::{auth_interceptor::AuthInterceptor, get_searcher_client};
+use jito_searcher_client::{get_searcher_client, token_authenticator::ClientInterceptor};
 use log::{info, warn, Level, LevelFilter};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
@@ -80,7 +80,7 @@ enum Commands {
 }
 
 async fn print_next_leader_info(
-    client: &mut SearcherServiceClient<InterceptedService<Channel, AuthInterceptor>>,
+    client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
 ) {
     let next_leader = client
         .get_next_scheduled_leader(NextScheduledLeaderRequest {})
