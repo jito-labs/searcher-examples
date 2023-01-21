@@ -55,7 +55,7 @@ enum Commands {
     /// Prints out information on connected leaders
     ConnectedLeaders,
     /// Prints out information on the tip accounts
-    GetTipAccounts,
+    TipAccounts,
     /// Sends a 1 lamport bundle
     SendBundle {
         /// RPC URL
@@ -128,7 +128,7 @@ async fn main() {
                 .into_inner();
             info!("{:?}", connected_leaders);
         }
-        Commands::GetTipAccounts => {
+        Commands::TipAccounts => {
             let tip_accounts = client
                 .get_tip_accounts(GetTipAccountsRequest {})
                 .await
