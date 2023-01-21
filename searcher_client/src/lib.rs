@@ -4,11 +4,13 @@ use jito_protos::searcher::searcher_service_client::SearcherServiceClient;
 use solana_sdk::signature::Keypair;
 use thiserror::Error;
 use tonic::{
+    client,
     codegen::{http::uri::InvalidUri, InterceptedService},
     transport,
     transport::{Channel, Endpoint},
     Status,
 };
+use tonic_async_interceptor::async_interceptor;
 
 use crate::auth_interceptor::AuthInterceptor;
 
@@ -37,6 +39,7 @@ pub async fn get_searcher_client(
         .tls_config(tonic::transport::ClientTlsConfig::new())?
         .connect()
         .await?;
+
     let searcher_client =
         SearcherServiceClient::with_interceptor(searcher_channel, client_interceptor);
 

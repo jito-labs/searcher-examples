@@ -7,7 +7,7 @@ use jito_protos::auth::{
     auth_service_client::AuthServiceClient, GenerateAuthChallengeRequest,
     GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
 };
-use log::{error, info};
+use log::{debug, error, info};
 use solana_sdk::{signature::Signer, signer::keypair::Keypair};
 use tokio::runtime::Handle;
 use tonic::{
@@ -101,7 +101,10 @@ impl AuthInterceptor {
         url: &String,
         auth_keypair: &Keypair,
     ) -> Result<(Token, Token), Status> {
+        debug!("getting auth client");
         let mut auth_client = Self::get_auth_client(url).await?;
+
+        debug!("getting challenge-response");
         let challenge_resp = auth_client
             .generate_auth_challenge(GenerateAuthChallengeRequest {
                 role: Role::Searcher as i32,
@@ -116,6 +119,7 @@ impl AuthInterceptor {
             .as_ref()
             .to_vec();
 
+        debug!("getting tokens");
         let tokens = auth_client
             .generate_auth_tokens(GenerateAuthTokensRequest {
                 challenge,
@@ -152,16 +156,21 @@ impl AuthInterceptor {
     }
 
     pub async fn get_auth_client(url: &str) -> Result<AuthServiceClient<Channel>, Status> {
+        debug!("creating endpoint");
         let endpoint = Endpoint::from_shared(url.to_string())
             .map_err(|e| Status::internal(format!("bad authentication uri: {}", e.to_string())))?
             .tls_config(tonic::transport::ClientTlsConfig::new())
             .map_err(|e| Status::internal(format!("TLS error: {}", e.to_string())))?;
+
+        debug!("connecting");
+
         let auth_channel = endpoint.connect().await.map_err(|e| {
             Status::internal(format!(
                 "error connecting to auth service: {}",
                 e.to_string()
             ))
         })?;
+        debug!("connected");
         Ok(AuthServiceClient::new(auth_channel))
     }
 }
