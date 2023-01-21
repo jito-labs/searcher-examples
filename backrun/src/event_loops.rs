@@ -2,8 +2,8 @@ use std::{sync::Arc, time::Duration};
 
 use futures_util::StreamExt;
 use jito_protos::searcher::{PendingTxNotification, PendingTxSubscriptionRequest};
+use jito_searcher_client::get_searcher_client;
 use log::info;
-use searcher_service_client::get_searcher_client;
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
     rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},

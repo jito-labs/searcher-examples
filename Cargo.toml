@@ -3,5 +3,5 @@ members = [
     "backrun",
     "cli",
     "jito_protos",
-    "searcher_service_client",
+    "searcher_client",
 ]

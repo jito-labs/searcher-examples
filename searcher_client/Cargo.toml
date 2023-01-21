@@ -1,5 +1,5 @@
 [package]
-name = "searcher-service-client"
+name = "jito-searcher-client"
 version = "0.1.0"
 edition = "2021"
 description = "Wrapper around the generated gRPC. Adds auth and retry semantics."

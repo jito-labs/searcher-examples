@@ -10,9 +10,9 @@ use tonic::{
     Status,
 };
 
-use crate::client_with_auth::AuthInterceptor;
+use crate::auth_interceptor::AuthInterceptor;
 
-pub mod client_with_auth;
+pub mod auth_interceptor;
 
 #[derive(Debug, Error)]
 pub enum BlockEngineConnectionError {

@@ -12,8 +12,8 @@ use jito_protos::{
         SendBundleRequest, SubscribeBundleResultsRequest,
     },
 };
+use jito_searcher_client::{auth_interceptor::AuthInterceptor, get_searcher_client};
 use log::{info, warn, LevelFilter};
-use searcher_service_client::{client_with_auth::AuthInterceptor, get_searcher_client};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -235,7 +235,6 @@ async fn main() {
                 .collect();
 
             let signatures: Vec<Signature> = txs.iter().map(|tx| tx.signatures[0]).collect();
-            info!("transaction signatures: {:?}", signatures);
 
             // convert them to packets + send over
             let packets: Vec<_> = txs.iter().map(proto_packet_from_versioned_tx).collect();
@@ -271,6 +270,9 @@ async fn main() {
                 warn!("transactions in bundle did not land :(");
             } else {
                 info!("bundle landed successfully!!");
+                for sig in signatures {
+                    info!("https://solscan.io/tx/{}", sig);
+                }
             }
         }
     }

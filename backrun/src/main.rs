@@ -20,11 +20,11 @@ use jito_protos::{
         NextScheduledLeaderRequest, PendingTxNotification, SendBundleRequest, SendBundleResponse,
     },
 };
+use jito_searcher_client::{
+    auth_interceptor::AuthInterceptor, get_searcher_client, BlockEngineConnectionError,
+};
 use log::*;
 use rand::{rngs::ThreadRng, thread_rng, Rng};
-use searcher_service_client::{
-    client_with_auth::AuthInterceptor, get_searcher_client, BlockEngineConnectionError,
-};
 use solana_client::{
     client_error::ClientError,
     nonblocking::{pubsub_client::PubsubClientError, rpc_client::RpcClient},
