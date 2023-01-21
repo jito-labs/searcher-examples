@@ -1,13 +1,19 @@
-use crate::token_authenticator::ClientInterceptor;
-use jito_protos::auth::auth_service_client::AuthServiceClient;
-use jito_protos::auth::Role;
-use jito_protos::searcher::searcher_service_client::SearcherServiceClient;
-use solana_sdk::signature::Keypair;
 use std::sync::Arc;
+
+use jito_protos::{
+    auth::{auth_service_client::AuthServiceClient, Role},
+    searcher::searcher_service_client::SearcherServiceClient,
+};
+use solana_sdk::signature::Keypair;
 use thiserror::Error;
-use tonic::codegen::InterceptedService;
-use tonic::transport::{Channel, Endpoint};
-use tonic::{transport, Status};
+use tonic::{
+    codegen::InterceptedService,
+    transport,
+    transport::{Channel, Endpoint},
+    Status,
+};
+
+use crate::token_authenticator::ClientInterceptor;
 
 pub mod token_authenticator;
 
@@ -22,13 +28,12 @@ pub enum BlockEngineConnectionError {
 pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;
 
 pub async fn get_searcher_client(
-    auth_addr: &str,
-    searcher_addr: &str,
+    block_engine_url: &str,
     auth_keypair: &Arc<Keypair>,
 ) -> BlockEngineConnectionResult<
     SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
 > {
-    let auth_channel = create_grpc_channel(auth_addr).await?;
+    let auth_channel = create_grpc_channel(block_engine_url).await?;
     let client_interceptor = ClientInterceptor::new(
         AuthServiceClient::new(auth_channel),
         &auth_keypair,
@@ -36,7 +41,7 @@ pub async fn get_searcher_client(
     )
     .await?;
 
-    let searcher_channel = create_grpc_channel(searcher_addr).await?;
+    let searcher_channel = create_grpc_channel(block_engine_url).await?;
     let searcher_client =
         SearcherServiceClient::with_interceptor(searcher_channel, client_interceptor);
     Ok(searcher_client)

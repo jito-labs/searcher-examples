@@ -1,21 +1,24 @@
+use std::{sync::Arc, time::Duration};
+
 use futures_util::StreamExt;
 use jito_protos::searcher::{PendingTxNotification, PendingTxSubscriptionRequest};
+use jito_searcher_client::get_searcher_client;
 use log::info;
-use searcher_service_client::get_searcher_client;
-use solana_client::nonblocking::pubsub_client::PubsubClient;
-use solana_client::rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter};
-use solana_client::rpc_response;
-use solana_client::rpc_response::{RpcBlockUpdate, SlotUpdate};
+use solana_client::{
+    nonblocking::pubsub_client::PubsubClient,
+    rpc_config::{RpcBlockSubscribeConfig, RpcBlockSubscribeFilter},
+    rpc_response,
+    rpc_response::{RpcBlockUpdate, SlotUpdate},
+};
 use solana_metrics::{datapoint_error, datapoint_info};
-use solana_sdk::clock::Slot;
-use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::signature::Keypair;
+use solana_sdk::{
+    clock::Slot,
+    commitment_config::{CommitmentConfig, CommitmentLevel},
+    pubkey::Pubkey,
+    signature::Keypair,
+};
 use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc::Sender;
-use tokio::time::sleep;
+use tokio::{sync::mpsc::Sender, time::sleep};
 
 // slot update subscription loop that attempts to maintain a connection to an RPC server
 pub async fn slot_subscribe_loop(pubsub_addr: String, slot_sender: Sender<Slot>) {
@@ -141,8 +144,7 @@ pub async fn block_subscribe_loop(
 
 // attempts to maintain connection to searcher service and stream pending transaction notifications over a channel
 pub async fn pending_tx_loop(
-    auth_addr: String,
-    searcher_addr: String,
+    block_engine_addr: String,
     auth_keypair: Arc<Keypair>,
     pending_tx_sender: Sender<PendingTxNotification>,
     backrun_pubkeys: Vec<Pubkey>,
@@ -157,7 +159,7 @@ pub async fn pending_tx_loop(
     loop {
         sleep(Duration::from_secs(1)).await;
 
-        match get_searcher_client(&auth_addr, &searcher_addr, &auth_keypair).await {
+        match get_searcher_client(&block_engine_addr, &auth_keypair).await {
             Ok(mut searcher_client) => {
                 match searcher_client
                     .subscribe_pending_transactions(PendingTxSubscriptionRequest {

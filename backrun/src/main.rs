@@ -1,60 +1,63 @@
 mod event_loops;
 
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
-use std::time::Instant;
-use std::{path::Path, result, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::{hash_map::Entry, HashMap, HashSet},
+    path::Path,
+    result,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use crate::event_loops::{block_subscribe_loop, pending_tx_loop, slot_subscribe_loop};
 use clap::Parser;
 use env_logger::TimestampPrecision;
 use histogram::Histogram;
-use jito_protos::bundle::Bundle;
-use jito_protos::convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet};
-use jito_protos::searcher::{
-    searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
-    NextScheduledLeaderRequest, PendingTxNotification, SendBundleRequest, SendBundleResponse,
+use jito_protos::{
+    bundle::Bundle,
+    convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet},
+    searcher::{
+        searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
+        NextScheduledLeaderRequest, PendingTxNotification, SendBundleRequest, SendBundleResponse,
+    },
+};
+use jito_searcher_client::{
+    get_searcher_client, token_authenticator::ClientInterceptor, BlockEngineConnectionError,
 };
 use log::*;
-use rand::rngs::ThreadRng;
-use rand::{thread_rng, Rng};
-use searcher_service_client::token_authenticator::ClientInterceptor;
-use searcher_service_client::{get_searcher_client, BlockEngineConnectionError};
-use solana_client::client_error::ClientError;
-use solana_client::nonblocking::pubsub_client::PubsubClientError;
-use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_response;
-use solana_client::rpc_response::RpcBlockUpdate;
+use rand::{rngs::ThreadRng, thread_rng, Rng};
+use solana_client::{
+    client_error::ClientError,
+    nonblocking::{pubsub_client::PubsubClientError, rpc_client::RpcClient},
+    rpc_response,
+    rpc_response::RpcBlockUpdate,
+};
 use solana_metrics::{datapoint_info, set_host_id};
-use solana_sdk::clock::Slot;
-use solana_sdk::commitment_config::{CommitmentConfig, CommitmentLevel};
-use solana_sdk::hash::Hash;
-use solana_sdk::signature::{Signature, Signer};
-use solana_sdk::system_instruction::transfer;
-use solana_sdk::transaction::Transaction;
-use solana_sdk::transaction::VersionedTransaction;
 use solana_sdk::{
+    clock::Slot,
+    commitment_config::{CommitmentConfig, CommitmentLevel},
+    hash::Hash,
     pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair},
+    signature::{read_keypair_file, Keypair, Signature, Signer},
+    system_instruction::transfer,
+    transaction::{Transaction, VersionedTransaction},
 };
 use spl_memo::build_memo;
 use thiserror::Error;
-use tokio::sync::mpsc::{channel, Receiver};
-use tokio::{runtime::Builder, time::interval};
-use tonic::codegen::InterceptedService;
-use tonic::transport::Channel;
-use tonic::{Response, Status};
+use tokio::{
+    runtime::Builder,
+    sync::mpsc::{channel, Receiver},
+    time::interval,
+};
+use tonic::{codegen::InterceptedService, transport::Channel, Response, Status};
+
+use crate::event_loops::{block_subscribe_loop, pending_tx_loop, slot_subscribe_loop};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// Address for auth service
     #[clap(long, env)]
-    auth_addr: String,
-
-    /// Address for searcher service
-    #[clap(long, env)]
-    searcher_addr: String,
+    block_engine_addr: String,
 
     /// Accounts to backrun
     #[clap(long, env)]
@@ -479,8 +482,7 @@ fn print_block_stats(
 }
 
 async fn run_searcher_loop(
-    auth_addr: String,
-    searcher_addr: String,
+    block_engine_addr: String,
     auth_keypair: Arc<Keypair>,
     keypair: &Keypair,
     rpc_url: String,
@@ -494,8 +496,7 @@ async fn run_searcher_loop(
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
     let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
 
-    let mut searcher_client =
-        get_searcher_client(&auth_addr, &searcher_addr, &auth_keypair).await?;
+    let mut searcher_client = get_searcher_client(&block_engine_addr, &auth_keypair).await?;
 
     let mut rng = thread_rng();
 
@@ -592,16 +593,14 @@ fn main() -> Result<()> {
         tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
         tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
         tokio::spawn(pending_tx_loop(
-            args.auth_addr.clone(),
-            args.searcher_addr.clone(),
+            args.block_engine_addr.clone(),
             auth_keypair.clone(),
             pending_tx_sender,
             backrun_pubkeys,
         ));
 
         let result = run_searcher_loop(
-            args.auth_addr,
-            args.searcher_addr,
+            args.block_engine_addr,
             auth_keypair,
             &payer_keypair,
             args.rpc_url,

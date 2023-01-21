@@ -1,28 +1,49 @@
 # About
+This repository contains a few examples on how to use a searcher.
 
-# Program
-An example program that backruns accounts with a 1 lamport transfer and a memo program.
-
-## Example:
+## Setup
+- You may have to install protoc to compile protobufs.
+- Ensure that rust is installed:
 ```bash
-
-git submodule update --init --recursive
-
-cargo b --release && \
-    RUST_LOG=info ./target/release/jito-backrun-example \
-    --auth-addr http://{auth_addr}:1005 \
-    --searcher-addr http://{searcher_addr}:1004 \
-    --payer-keypair id.json \
-    --auth-keypair id.json \
-    --pubsub-url ws://{RPC_URL}:8900 \
-    --rpc-url http://{RPC_URL}:8899 \
-    --tip-program-id {TIP_PROGRAM_ID} \
-    --backrun-accounts {account}
+$ curl https://sh.rustup.rs -sSf | sh
+$ source $HOME/.cargo/env
+$ git clone https://github.com/jito-labs/searcher-examples.git
+$ cd searcher-examples
+$ git submodule update --init --recursive
 ```
 
-## Connecting
-Please check out https://jito-labs.gitbook.io/mev/systems/connecting for the most up-to-date information on block engines.
-Please check out https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses for the most up-to-date tip program id.
+## Infrastructure
+You will need access to a few things before running these examples.
+
+### Block Engine URLs
+A list of our block engine URLs can be found here: https://jito-labs.gitbook.io/mev/systems/connecting/mainnet
+
+### Block Engine API Key
+Our block engine is currently API-gated, but we can generate API keys. Please email support@jito.wtf or create a ticket in our discord asking for an API key.
+
+### On-chain addresses
+On-chain addresses for tip programs and tip accounts can be found here: https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses
+
+### RPC + Geyser
+If one needs access to low-latency, load-balanced RPC and Geyser, please reach out to support@jito.wtf or create a ticket in our discord asking for a Geyser/RPC API key.
+
+## Folders
+
+### backrun
+Our most complex example, this shows how to "backrun" transactions. 
+
+Backrunning is when one inserts a transaction immediately behind a target transaction. Common forms of backrunning can be arbitrage and liquidations.
+
+This example listens to transactions from the mempool and submits bundles containing a backrun transaction immediately behind a target transaction.
+
+### cli
+This is a rust program that exercises functionality inside the searcher API so you can explore the functionality. It exercises read-only requests and 
+
+### jito_protos
+An example on how to build the protobufs that define the messages and services one can use to talk to our block engine.
+
+### searcher_client
+An example on how to authenticate with the block engine as a searcher. All users in the block engine need to perform a challenge-response 
 
 ## Disclaimer
-Use this at your own risk. 
+Use this at your own risk.
