@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{env, str::FromStr, sync::Arc, time::Duration};
 
 use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
@@ -13,7 +13,7 @@ use jito_protos::{
     },
 };
 use jito_searcher_client::{get_searcher_client, token_authenticator::ClientInterceptor};
-use log::{info, warn, Level, LevelFilter};
+use log::{info, warn};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -98,9 +98,11 @@ async fn print_next_leader_info(
 async fn main() {
     let args: Args = Args::parse();
 
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", "info")
+    }
     env_logger::builder()
         .format_timestamp(Some(TimestampPrecision::Micros))
-        .filter_level(LevelFilter::Debug) // TODO (LB): add RUST_LOG support
         .init();
 
     let keypair = Arc::new(read_keypair_file(args.keypair_path).expect("reads keypair at path"));
@@ -111,15 +113,12 @@ async fn main() {
 
     match args.command {
         Commands::NextScheduledLeader => {
-            let _ = tokio::spawn(async move {
-                let next_leader = client
-                    .get_next_scheduled_leader(NextScheduledLeaderRequest {})
-                    .await
-                    .expect("gets next scheduled leader")
-                    .into_inner();
-                info!("{:?}", next_leader);
-            })
-            .await;
+            let next_leader = client
+                .get_next_scheduled_leader(NextScheduledLeaderRequest {})
+                .await
+                .expect("gets next scheduled leader")
+                .into_inner();
+            info!("{:?}", next_leader);
         }
         Commands::ConnectedLeaders => {
             let connected_leaders = client
