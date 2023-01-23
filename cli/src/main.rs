@@ -54,6 +54,11 @@ enum Commands {
     NextScheduledLeader,
     /// Prints out information on connected leaders
     ConnectedLeaders,
+    /// Prints out connected leaders with their leader slot percentage
+    ConnectedLeadersInfo {
+        #[clap(long, required = true)]
+        rpc_url: String,
+    },
     /// Prints out information on the tip accounts
     TipAccounts,
     /// Sends a 1 lamport bundle
@@ -127,6 +132,26 @@ async fn main() {
                 .expect("gets connected leaders")
                 .into_inner();
             info!("{:?}", connected_leaders);
+        }
+        Commands::ConnectedLeadersInfo { rpc_url } => {
+            let connected_leaders_response = client
+                .get_connected_leaders(ConnectedLeadersRequest {})
+                .await
+                .expect("gets connected leaders")
+                .into_inner();
+
+            let rpc_client = RpcClient::new(rpc_url);
+            let epoch_info = rpc_client.get_epoch_info()
+                .await
+                .expect("gets epoch info");
+
+            let mut total_leader_slots = 0;
+            for (connected_leader, slot_list) in connected_leaders_response.connected_validators {
+                let connected_leader_slots = slot_list.slots.len();
+                total_leader_slots += connected_leader_slots;
+                info!("connected_leader: {}, leader slots: {:.2}%", connected_leader, connected_leader_slots as f64 * 100f64 / epoch_info.slots_in_epoch as f64);
+            }
+            info!("total leader slots for block engine: {:.2}%", total_leader_slots as f64 * 100f64 / epoch_info.slots_in_epoch as f64);
         }
         Commands::TipAccounts => {
             let tip_accounts = client
