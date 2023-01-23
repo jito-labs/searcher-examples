@@ -10,13 +10,14 @@ The following program exposes functionality in the Block Engine's searcher API.
 
 ## Building
 ```bash
+git submodule update --init --recursive
 cargo b --release --bin jito-searcher-cli
 ```
 
 ## Running
 
 ### Listening to mempool
-Subscribe to transactions that write-lock the Pyth SOL/USDC account:
+Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG):
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
