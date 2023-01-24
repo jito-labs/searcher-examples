@@ -54,6 +54,11 @@ enum Commands {
     NextScheduledLeader,
     /// Prints out information on connected leaders
     ConnectedLeaders,
+    /// Prints out connected leaders with their leader slot percentage
+    ConnectedLeadersInfo {
+        #[clap(long, required = true)]
+        rpc_url: String,
+    },
     /// Prints out information on the tip accounts
     TipAccounts,
     /// Sends a 1 lamport bundle
@@ -127,6 +132,44 @@ async fn main() {
                 .expect("gets connected leaders")
                 .into_inner();
             info!("{:?}", connected_leaders);
+        }
+        Commands::ConnectedLeadersInfo { rpc_url } => {
+            let connected_leaders_response = client
+                .get_connected_leaders(ConnectedLeadersRequest {})
+                .await
+                .expect("gets connected leaders")
+                .into_inner();
+            let connected_validators = connected_leaders_response.connected_validators;
+
+            let rpc_client = RpcClient::new(rpc_url);
+            let rpc_vote_account_status = rpc_client
+                .get_vote_accounts()
+                .await
+                .expect("gets vote accounts");
+
+            let total_activated_stake: u64 = rpc_vote_account_status
+                .current
+                .iter()
+                .chain(rpc_vote_account_status.delinquent.iter())
+                .map(|vote_account| vote_account.activated_stake)
+                .sum();
+
+            let mut total_activated_connected_stake = 0;
+            for rpc_vote_account_info in rpc_vote_account_status.current {
+                if let Some(_) = connected_validators.get(&rpc_vote_account_info.node_pubkey) {
+                    total_activated_connected_stake += rpc_vote_account_info.activated_stake;
+                    info!(
+                        "connected_leader: {}, stake: {:.2}%",
+                        rpc_vote_account_info.node_pubkey,
+                        rpc_vote_account_info.activated_stake as f64 * 100f64
+                            / total_activated_stake as f64
+                    );
+                }
+            }
+            info!(
+                "total stake for block engine: {:.2}%",
+                total_activated_connected_stake as f64 * 100f64 / total_activated_stake as f64
+            );
         }
         Commands::TipAccounts => {
             let tip_accounts = client
