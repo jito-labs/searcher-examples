@@ -9,6 +9,7 @@ packages = [{ include = "python_searcher" }]
 [tool.poetry.dependencies]
 python = "^3.10"
 grpcio = "^1.51.1"
+protobuf = "^4.21.12"
 
 [build-system]
 requires = ["poetry-core"]

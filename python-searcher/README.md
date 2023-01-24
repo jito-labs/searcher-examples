@@ -3,7 +3,7 @@
 # About
 foo
 
-# Setting up development machines
+# Tooling
 
 Install pip
 ```asm
@@ -18,6 +18,12 @@ $ pip3 install virtualenv
 Install poetry
 ```bash
 $ curl -sSL https://install.python-poetry.org | python3 -
+```
+
+# How to develop
+```bash
+$ poetry install
+$ poetry protoc
 ```
 
 # Helpful poetry commands
