@@ -139,19 +139,37 @@ async fn main() {
                 .await
                 .expect("gets connected leaders")
                 .into_inner();
+            let connected_validators = connected_leaders_response.connected_validators;
 
             let rpc_client = RpcClient::new(rpc_url);
-            let epoch_info = rpc_client.get_epoch_info()
+            let rpc_vote_account_status = rpc_client
+                .get_vote_accounts()
                 .await
-                .expect("gets epoch info");
+                .expect("gets vote accounts");
 
-            let mut total_leader_slots = 0;
-            for (connected_leader, slot_list) in connected_leaders_response.connected_validators {
-                let connected_leader_slots = slot_list.slots.len();
-                total_leader_slots += connected_leader_slots;
-                info!("connected_leader: {}, leader slots: {:.2}%", connected_leader, connected_leader_slots as f64 * 100f64 / epoch_info.slots_in_epoch as f64);
+            let total_activated_stake: u64 = rpc_vote_account_status
+                .current
+                .iter()
+                .chain(rpc_vote_account_status.delinquent.iter())
+                .map(|vote_account| vote_account.activated_stake)
+                .sum();
+
+            let mut total_activated_connected_stake = 0;
+            for rpc_vote_account_info in rpc_vote_account_status.current {
+                if let Some(_) = connected_validators.get(&rpc_vote_account_info.node_pubkey) {
+                    total_activated_connected_stake += rpc_vote_account_info.activated_stake;
+                    info!(
+                        "connected_leader: {}, stake: {:.2}%",
+                        rpc_vote_account_info.node_pubkey,
+                        rpc_vote_account_info.activated_stake as f64 * 100f64
+                            / total_activated_stake as f64
+                    );
+                }
             }
-            info!("total leader slots for block engine: {:.2}%", total_leader_slots as f64 * 100f64 / epoch_info.slots_in_epoch as f64);
+            info!(
+                "total stake for block engine: {:.2}%",
+                total_activated_connected_stake as f64 * 100f64 / total_activated_stake as f64
+            );
         }
         Commands::TipAccounts => {
             let tip_accounts = client
