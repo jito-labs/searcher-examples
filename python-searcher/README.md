@@ -28,6 +28,16 @@ $ poetry shell
 $ exit
 ```
 
+Install poetry packages
+```bash
+$ poetry install
+```
+
+Build protobufs
+```bash
+$ poetry protoc
+```
+
 Package library
 ```bash
 $ poetry build
