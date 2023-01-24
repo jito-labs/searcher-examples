@@ -3,6 +3,7 @@ This repository contains a few examples on how to use a searcher.
 
 ## Setup
 - You may have to install protoc to compile protobufs.
+
 - Ensure that rust is installed:
 ```bash
 $ curl https://sh.rustup.rs -sSf | sh

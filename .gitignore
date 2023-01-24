@@ -2,3 +2,6 @@
 id.json
 .idea
 target/
+venv/
+dist/
+__pycache__
