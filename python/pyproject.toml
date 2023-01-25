@@ -1,8 +1,8 @@
 [tool.poetry]
-name = "python-searcher"
-version = "0.1.0"
+name = "jito_searcher_client"
+version = "0.0.1"
 description = "Jito Labs Python Searcher Client"
-authors = ["Lucas B <lucas@jito.wtf>"]
+authors = ["Jito Labs <support@jito.wtf>"]
 readme = "README.md"
 packages = [{ include = "searcher" }]
 

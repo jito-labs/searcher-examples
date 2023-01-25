@@ -1,12 +1,10 @@
-
-
 # About
-foo
+This library contains tooling to interact with Jito Lab's Block Engine as a searcher.
 
 # Tooling
 
 Install pip
-```asm
+```bash
 $ curl -sSL https://bootstrap.pypa.io/get-pip.py | python 3 -
 ```
 
@@ -15,36 +13,16 @@ Install poetry
 $ curl -sSL https://install.python-poetry.org | python3 -
 ```
 
-# How to develop
+Setup environment and build protobufs
 ```bash
 $ poetry install
 $ poetry protoc
-```
-
-# Helpful poetry commands
-
-Activate poetry shell and exit
-```bash
 $ poetry shell
-$ exit
 ```
 
-Install poetry packages
-```bash
-$ poetry install
-```
-
-Build protobufs
+Publishing package
 ```bash
 $ poetry protoc
-```
-
-Package library
-```bash
 $ poetry build
-```
-
-Publishing to PyPI
-```bash
 $ poetry publish
 ```

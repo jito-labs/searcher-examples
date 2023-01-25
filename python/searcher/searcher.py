@@ -2,6 +2,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
 
+from grpc._channel import _InactiveRpcError
 from grpc.aio import ClientCallDetails
 
 from generated.searcher_pb2_grpc import SearcherServiceStub
@@ -11,7 +12,7 @@ from generated.auth_pb2 import (
     GenerateAuthChallengeRequest,
     Role,
     GenerateAuthTokensRequest,
-    GenerateAuthTokensResponse,
+    GenerateAuthTokensResponse, RefreshAccessTokenRequest, RefreshAccessTokenResponse,
 )
 from grpc import (
     intercept_channel,
@@ -64,8 +65,7 @@ class SearcherInterceptor(
         self._refresh_token: Optional[JwtToken] = None
 
     def intercept_unary_stream(self, continuation, client_call_details, request):
-        if self._needs_authentication():
-            self._authenticate()
+        self.authenticate()
 
         client_call_details = self._insert_headers(
             [("authorization", f"Bearer {self._access_token.token}")],
@@ -75,10 +75,9 @@ class SearcherInterceptor(
         return continuation(client_call_details, request)
 
     def intercept_stream_unary(
-        self, continuation, client_call_details, request_iterator
+            self, continuation, client_call_details, request_iterator
     ):
-        if self._needs_authentication():
-            self._authenticate()
+        self.authenticate()
 
         client_call_details = self._insert_headers(
             [("authorization", f"Bearer {self._access_token.token}")],
@@ -88,10 +87,9 @@ class SearcherInterceptor(
         return continuation(client_call_details, request_iterator)
 
     def intercept_stream_stream(
-        self, continuation, client_call_details, request_iterator
+            self, continuation, client_call_details, request_iterator
     ):
-        if self._needs_authentication():
-            self._authenticate()
+        self.authenticate()
 
         client_call_details = self._insert_headers(
             [("authorization", f"Bearer {self._access_token.token}")],
@@ -101,8 +99,7 @@ class SearcherInterceptor(
         return continuation(client_call_details, request_iterator)
 
     def intercept_unary_unary(self, continuation, client_call_details, request):
-        if self._needs_authentication():
-            self._authenticate()
+        self.authenticate()
 
         client_call_details = self._insert_headers(
             [("authorization", f"Bearer {self._access_token.token}")],
@@ -113,7 +110,7 @@ class SearcherInterceptor(
 
     @staticmethod
     def _insert_headers(
-        new_metadata: List[Tuple[str, str]], client_call_details
+            new_metadata: List[Tuple[str, str]], client_call_details
     ) -> ClientCallDetails:
         metadata = []
         if client_call_details.metadata is not None:
@@ -128,20 +125,30 @@ class SearcherInterceptor(
             False,
         )
 
-    def _needs_authentication(self) -> bool:
-        """
-        The JWT needs authentication if there hasn't been an authentication yet or the access token has expired.
-        """
-        # return None in (
-        #     self._refresh_token,
-        #     self._access_token,
-        # ) or self._access_token.expiration > int(time.time())
-        return True
+    def authenticate(self):
+        now = int(time.time())
+        if self._access_token is None or self._refresh_token is None or now >= self._refresh_token.expiration:
+            self.full_authentication()
+        elif now >= self._access_token.expiration:
+            self.refresh_authentication()
 
-    def _authenticate(self):
+    def refresh_authentication(self):
         """
-        Authenticate with the block engine.
-        TODO (LB): don't always do full auth
+        Performs an authentication refresh with the block engine, which involves using the refresh token to get a new
+        access token.
+        """
+        credentials = ssl_channel_credentials()
+        channel = secure_channel(self._url, credentials)
+        auth_client = AuthServiceStub(channel)
+
+        new_access_token: RefreshAccessTokenResponse = auth_client.RefreshAccessToken(
+            RefreshAccessTokenRequest(refresh_token=self._refresh_token.token))
+        self._access_token = JwtToken(token=new_access_token.access_token.value,
+                                      expiration=new_access_token.access_token.expires_at_utc.seconds)
+
+    def full_authentication(self):
+        """
+        Performs full authentication with the block engine
         """
         credentials = ssl_channel_credentials()
         channel = secure_channel(self._url, credentials)
@@ -152,13 +159,10 @@ class SearcherInterceptor(
                 role=Role.SEARCHER, pubkey=bytes(self._kp.pubkey())
             )
         ).challenge
-        print(f"{challenge=}")
 
         challenge_to_sign = f"{str(self._kp.pubkey())}-{challenge}"
-        print(f"{challenge_to_sign=}")
 
         signed = self._kp.sign_message(bytes(challenge_to_sign, "utf8"))
-        print(f"{signed=}")
 
         auth_tokens_response: GenerateAuthTokensResponse = (
             auth_client.GenerateAuthTokens(
