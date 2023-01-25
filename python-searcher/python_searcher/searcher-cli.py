@@ -1,92 +1,112 @@
+import sys
 from dataclasses import dataclass
+from typing import List
 
 from solders.keypair import Keypair
 from searcher import get_searcher_client
-from generated.searcher_pb2 import GetTipAccountsRequest
+from generated.searcher_pb2 import (
+    GetTipAccountsRequest,
+    ConnectedLeadersRequest,
+    NextScheduledLeaderRequest,
+    PendingTxSubscriptionRequest,
+)
+from generated.searcher_pb2_grpc import SearcherServiceStub
 import click
 
-
-# rpc SubscribeBundleResults (SubscribeBundleResultsRequest) returns (stream bundle.BundleResult) {}
-#
-#   // RPC endpoint to subscribe to pending transactions. Clients can provide a list of base58 encoded accounts.
-#   // Any transactions that write-lock the provided accounts will be streamed to the searcher.
-#   rpc SubscribePendingTransactions (PendingTxSubscriptionRequest) returns (stream PendingTxNotification) {}
-#
-#   rpc SendBundle (SendBundleRequest) returns (SendBundleResponse) {}
-#
-#   // Returns the next scheduled leader connected to the block engine.
-#   rpc GetNextScheduledLeader (NextScheduledLeaderRequest) returns (NextScheduledLeaderResponse) {}
-#
-#   // Returns information on connected leader slots
-#   rpc GetConnectedLeaders (ConnectedLeadersRequest) returns (ConnectedLeadersResponse) {}
-#
-#   // Returns the tip accounts searchers shall transfer funds to for the leader to claim.
-#   rpc GetTipAccounts (GetTipAccountsRequest) returns (GetTipAccountsResponse) {}
-
-
-class Context:
-    keypair: Keypair
+from solders.pubkey import Pubkey
 
 
 @click.group("cli")
 @click.pass_context
-@click.argument("keypair_path")
-@click.argument("block_engine_url")
+@click.option(
+    "--keypair-path",
+    help="Path to a keypair that is authenticated with the block engine.",
+    required=True,
+)
+@click.option(
+    "--block-engine-url",
+    help="Block Engine URL",
+    required=True,
+)
 def cli(
-    ctx: Context,
-    keypair,
+    ctx,
+    keypair_path: str,
+    block_engine_url: str,
 ):
-    pass
+    """
+    This script can be used to interface with the block engine as a searcher.
+    """
+    with open(keypair_path) as kp_path:
+        kp = Keypair.from_json(kp_path.read())
+    ctx.obj = get_searcher_client(block_engine_url, kp)
 
 
 @click.command("mempool-accounts")
-def mempool_accounts():
-    print("mempool_accounts")
-    pass
+@click.pass_obj
+@click.argument("accounts", required=True, nargs=-1)
+def mempool_accounts(client: SearcherServiceStub, accounts: List[str]):
+    """
+    Stream pending transactions from write-locked accounts.
+    """
+    for transaction in client.SubscribePendingTransactions(
+        PendingTxSubscriptionRequest(accounts=accounts)
+    ):
+        print(transaction)
 
 
 @click.command("next-scheduled-leader")
-def next_scheduled_leader():
-    print("bar")
-    pass
+@click.pass_obj
+def next_scheduled_leader(client: SearcherServiceStub):
+    """
+    Find information on the next scheduled leader.
+    """
+    next_leader = client.GetNextScheduledLeader(NextScheduledLeaderRequest())
+    print(f"{next_leader=}")
 
 
 @click.command("connected-leaders")
-def connected_leaders():
-    print("bar")
-    pass
+@click.pass_obj
+def connected_leaders(client: SearcherServiceStub):
+    """
+    Get leaders connected to this block engine.
+    """
+    leaders = client.GetConnectedLeaders(ConnectedLeadersRequest())
+    print(f"{leaders=}")
 
 
-@click.command("next-scheduled-leader")
-def next_scheduled_leader():
-    print("bar")
+@click.command("connected-leaders-info")
+@click.pass_obj
+def connected_leaders_info(client: SearcherServiceStub):
+    """
+    Get connected leaders stake weight.
+    """
     pass
 
 
 @click.command("tip-accounts")
-def tip_accounts():
-    print("bar")
-    pass
+@click.pass_obj
+def tip_accounts(client: SearcherServiceStub):
+    """
+    Get the tip accounts from the block engine.
+    """
+    accounts = client.GetNextScheduledLeader(NextScheduledLeaderRequest())
+    print(f"{accounts=}")
 
 
 @click.command("send-bundle")
-def send_bundle():
-    print("bar")
+@click.pass_obj
+def send_bundle(client: SearcherServiceStub):
+    """
+    Send a bundle!
+    """
     pass
-
-
-# def main():
-#     keypair = Keypair()
-#     searcher = get_searcher_client("frankfurt.mainnet.block-engine.jito.wtf", keypair)
-#     tip_accounts = searcher.GetTipAccounts(GetTipAccountsRequest())
 
 
 if __name__ == "__main__":
     cli.add_command(mempool_accounts)
     cli.add_command(next_scheduled_leader)
-    cli.add_command(mempool_accounts)
-    cli.add_command(mempool_accounts)
-    cli.add_command(mempool_accounts)
-    cli.add_command(mempool_accounts)
-    cli.add_command(mempool_accounts)
+    cli.add_command(connected_leaders)
+    cli.add_command(connected_leaders_info)
+    cli.add_command(tip_accounts)
+    cli.add_command(send_bundle)
     cli()

@@ -1,13 +1,18 @@
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from grpc.aio import ClientCallDetails
 
 from generated.searcher_pb2_grpc import SearcherServiceStub
 from generated.searcher_pb2 import GetTipAccountsRequest
 from generated.auth_pb2_grpc import AuthServiceStub
-from generated.auth_pb2 import GenerateAuthChallengeRequest, Role
+from generated.auth_pb2 import (
+    GenerateAuthChallengeRequest,
+    Role,
+    GenerateAuthTokensRequest,
+    GenerateAuthTokensResponse,
+)
 from grpc import (
     intercept_channel,
     ssl_channel_credentials,
@@ -55,8 +60,6 @@ class SearcherInterceptor(
         self._url = url
         self._kp = kp
 
-        time.time()
-
         self._access_token: Optional[JwtToken] = None
         self._refresh_token: Optional[JwtToken] = None
 
@@ -64,7 +67,12 @@ class SearcherInterceptor(
         if self._needs_authentication():
             self._authenticate()
 
+        client_call_details = self._insert_headers(
+            [("authorization", f"Bearer {self._access_token.token}")],
+            client_call_details,
+        )
         print(client_call_details)
+
         return continuation(client_call_details, request)
 
     def intercept_stream_unary(
@@ -89,23 +97,30 @@ class SearcherInterceptor(
         if self._needs_authentication():
             self._authenticate()
 
+        client_call_details = self._insert_headers(
+            [("authorization", f"Bearer {self._access_token.token}")],
+            client_call_details,
+        )
+        print(client_call_details)
+
+        return continuation(client_call_details, request)
+
+    @staticmethod
+    def _insert_headers(
+        new_metadata: List[Tuple[str, str]], client_call_details
+    ) -> ClientCallDetails:
         metadata = []
         if client_call_details.metadata is not None:
             metadata = list(client_call_details.metadata)
-        metadata.append(
-            (
-                "authorization",
-                "Bearer foo",
-            )
-        )
-        client_call_details = ClientCallDetails(
+        metadata.extend(new_metadata)
+
+        return ClientCallDetails(
             client_call_details.method,
             client_call_details.timeout,
             metadata,
             client_call_details.credentials,
             False,
         )
-        return continuation(client_call_details, request)
 
     def _needs_authentication(self) -> bool:
         """
@@ -120,24 +135,43 @@ class SearcherInterceptor(
     def _authenticate(self):
         """
         Authenticate with the block engine.
-        TODO (LB): don't always perform full authentication
         """
-        # now = int(time.time())
-        # if not self._access_token or now > self._access_token.expiration:
-        #     if now > self._refresh_token.expiration:
-        #         pass
-        #     else:
-        #         pass
-
         credentials = ssl_channel_credentials()
         channel = secure_channel(self._url, credentials)
         auth_client = AuthServiceStub(channel)
-        challenge_response = auth_client.GenerateAuthChallenge(
+
+        challenge = auth_client.GenerateAuthChallenge(
             GenerateAuthChallengeRequest(
                 role=Role.SEARCHER, pubkey=bytes(self._kp.pubkey())
             )
+        ).challenge
+        print(f"{challenge=}")
+
+        challenge_to_sign = f"{str(self._kp.pubkey())}-{challenge}"
+        print(f"{challenge_to_sign=}")
+
+        signed = self._kp.sign_message(bytes(challenge_to_sign, "utf8"))
+        print(f"{signed=}")
+
+        auth_tokens_response: GenerateAuthTokensResponse = (
+            auth_client.GenerateAuthTokens(
+                GenerateAuthTokensRequest(
+                    challenge=challenge_to_sign,
+                    client_pubkey=bytes(self._kp.pubkey()),
+                    signed_challenge=bytes(signed),
+                )
+            )
         )
-        print(challenge_response)
+
+        self._access_token = JwtToken(
+            token=auth_tokens_response.access_token.value,
+            expiration=auth_tokens_response.access_token.expires_at_utc.seconds,
+        )
+
+        self._refresh_token = JwtToken(
+            token=auth_tokens_response.refresh_token.value,
+            expiration=auth_tokens_response.refresh_token.expires_at_utc.seconds,
+        )
 
 
 def get_searcher_client(url: str, kp: Keypair) -> SearcherServiceStub:
