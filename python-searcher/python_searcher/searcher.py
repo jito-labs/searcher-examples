@@ -71,7 +71,6 @@ class SearcherInterceptor(
             [("authorization", f"Bearer {self._access_token.token}")],
             client_call_details,
         )
-        print(client_call_details)
 
         return continuation(client_call_details, request)
 
@@ -81,7 +80,11 @@ class SearcherInterceptor(
         if self._needs_authentication():
             self._authenticate()
 
-        print(client_call_details)
+        client_call_details = self._insert_headers(
+            [("authorization", f"Bearer {self._access_token.token}")],
+            client_call_details,
+        )
+
         return continuation(client_call_details, request_iterator)
 
     def intercept_stream_stream(
@@ -90,7 +93,11 @@ class SearcherInterceptor(
         if self._needs_authentication():
             self._authenticate()
 
-        print(client_call_details)
+        client_call_details = self._insert_headers(
+            [("authorization", f"Bearer {self._access_token.token}")],
+            client_call_details,
+        )
+
         return continuation(client_call_details, request_iterator)
 
     def intercept_unary_unary(self, continuation, client_call_details, request):
@@ -101,7 +108,6 @@ class SearcherInterceptor(
             [("authorization", f"Bearer {self._access_token.token}")],
             client_call_details,
         )
-        print(client_call_details)
 
         return continuation(client_call_details, request)
 
@@ -135,6 +141,7 @@ class SearcherInterceptor(
     def _authenticate(self):
         """
         Authenticate with the block engine.
+        TODO (LB): don't always do full auth
         """
         credentials = ssl_channel_credentials()
         channel = secure_channel(self._url, credentials)

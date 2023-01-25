@@ -4,4 +4,4 @@ id.json
 target/
 venv/
 dist/
-__pycache__
+**/__pycache__/

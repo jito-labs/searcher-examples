@@ -10,6 +10,7 @@ from generated.searcher_pb2 import (
     NextScheduledLeaderRequest,
     PendingTxSubscriptionRequest,
     PendingTxNotification,
+    NextScheduledLeaderResponse,
 )
 from generated.searcher_pb2_grpc import SearcherServiceStub
 import click
@@ -50,6 +51,13 @@ def mempool_accounts(client: SearcherServiceStub, accounts: List[str]):
     """
     Stream pending transactions from write-locked accounts.
     """
+    leader: NextScheduledLeaderResponse = client.GetNextScheduledLeader(
+        NextScheduledLeaderRequest()
+    )
+    print(
+        f"next scheduled leader is {leader.next_leader_identity} in {leader.next_leader_slot - leader.current_slot} slots"
+    )
+
     for notification in client.SubscribePendingTransactions(
         PendingTxSubscriptionRequest(accounts=accounts)
     ):
