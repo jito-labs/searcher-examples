@@ -1,8 +1,12 @@
 import time
 from typing import List
 
+from solana.transaction import Transaction
 from solders.keypair import Keypair
+from solders.pubkey import Pubkey
 from solders.rpc.responses import GetBalanceResp
+from solders.system_program import transfer, TransferParams
+from spl.memo.instructions import create_memo, MemoParams
 
 from searcher import get_searcher_client
 from generated.searcher_pb2 import (
@@ -31,9 +35,9 @@ from solana.rpc.api import Client
     required=True,
 )
 def cli(
-    ctx,
-    keypair_path: str,
-    block_engine_url: str,
+        ctx,
+        keypair_path: str,
+        block_engine_url: str,
 ):
     """
     This script can be used to interface with the block engine as a searcher.
@@ -58,7 +62,7 @@ def mempool_accounts(client: SearcherServiceStub, accounts: List[str]):
     )
 
     for notification in client.SubscribePendingTransactions(
-        PendingTxSubscriptionRequest(accounts=accounts)
+            PendingTxSubscriptionRequest(accounts=accounts)
     ):
         for packet in notification.transactions:
             print(VersionedTransaction.from_bytes(packet.data))
@@ -142,19 +146,20 @@ def tip_accounts(client: SearcherServiceStub):
     required=True,
 )
 def send_bundle(
-    client: SearcherServiceStub,
-    rpc_url: str,
-    payer: str,
-    message: str,
-    num_txs: int,
-    lamports: int,
-    tip_account: str,
+        client: SearcherServiceStub,
+        rpc_url: str,
+        payer: str,
+        message: str,
+        num_txs: int,
+        lamports: int,
+        tip_account: str,
 ):
     """
     Send a bundle!
     """
     with open(payer) as kp_path:
         payer_kp = Keypair.from_json(kp_path.read())
+    tip_account = Pubkey.from_string(tip_account)
 
     rpc_client = Client(rpc_url)
     balance = rpc_client.get_balance(payer_kp.pubkey()).value
@@ -168,13 +173,24 @@ def send_bundle(
             NextScheduledLeaderRequest()
         )
         num_slots_to_leader = next_leader.next_leader_slot - next_leader.current_slot
-        print(f"waiting {num_slots_to_leader} to jito leader")
+        print(f"waiting {num_slots_to_leader} slots to jito leader")
         is_leader_slot = num_slots_to_leader <= 2
 
-    blockhash = rpc_client.get_latest_blockhash().blockhash
+    blockhash = rpc_client.get_latest_blockhash().value.blockhash
+    print(blockhash)
+
     txs = []
     for idx in range(num_txs):
-        txs.append(VersionedTransaction())
+        transfer_ix = transfer(TransferParams(
+            from_pubkey=payer_kp.pubkey(),
+            to_pubkey=tip_account,
+            lamports=lamports
+        ))
+        memp_ix = create_memo(MemoParams(program_id=Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
+                                         signer=payer_kp.pubkey(), message=bytes(message)))
+        txs.append(Transaction(recent_blockhash=blockhash, nonce_info=None, fee_payer=payer_kp.pubkey(),
+                               instructions=[memp_ix, transfer_ix]))
+    print(txs)
 
 
 if __name__ == "__main__":

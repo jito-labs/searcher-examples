@@ -126,6 +126,9 @@ class SearcherInterceptor(
         )
 
     def authenticate(self):
+        """
+        Maybe authenticates depending on state of access + refresh tokens
+        """
         now = int(time.time())
         if self._access_token is None or self._refresh_token is None or now >= self._refresh_token.expiration:
             self.full_authentication()
@@ -192,7 +195,12 @@ def get_searcher_client(url: str, kp: Keypair) -> SearcherServiceStub:
     :param kp: keypair of the block engine
     :return: SearcherServiceStub which handles authentication on requests
     """
+    # Authenticate immediately
+    searcher_interceptor = SearcherInterceptor(url, kp)
+    searcher_interceptor.authenticate()
+
     credentials = ssl_channel_credentials()
     channel = secure_channel(url, credentials)
-    intercepted_channel = intercept_channel(channel, SearcherInterceptor(url, kp))
+    intercepted_channel = intercept_channel(channel, searcher_interceptor)
+
     return SearcherServiceStub(intercepted_channel)
