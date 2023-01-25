@@ -10,6 +10,8 @@ packages = [{ include = "python_searcher" }]
 python = "^3.10"
 grpcio = "^1.51.1"
 protobuf = "^4.21.12"
+solders = "^0.14.2"
+click = "^8.1.3"
 
 [build-system]
 requires = ["poetry-core"]
@@ -18,3 +20,8 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry-grpc-plugin]
 proto_path = "../jito_protos/protos"
 python_out = "./python_searcher/generated"
+
+[tool.black]
+line-length = 120
+target-version = ['py37']
+include = '\.pyi?$'
