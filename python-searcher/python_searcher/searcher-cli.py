@@ -9,11 +9,13 @@ from generated.searcher_pb2 import (
     ConnectedLeadersRequest,
     NextScheduledLeaderRequest,
     PendingTxSubscriptionRequest,
+    PendingTxNotification,
 )
 from generated.searcher_pb2_grpc import SearcherServiceStub
 import click
 
 from solders.pubkey import Pubkey
+from solders.transaction import VersionedTransaction
 
 
 @click.group("cli")
@@ -48,10 +50,11 @@ def mempool_accounts(client: SearcherServiceStub, accounts: List[str]):
     """
     Stream pending transactions from write-locked accounts.
     """
-    for transaction in client.SubscribePendingTransactions(
+    for notification in client.SubscribePendingTransactions(
         PendingTxSubscriptionRequest(accounts=accounts)
     ):
-        print(transaction)
+        for packet in notification.transactions:
+            print(VersionedTransaction.from_bytes(packet.data))
 
 
 @click.command("next-scheduled-leader")
