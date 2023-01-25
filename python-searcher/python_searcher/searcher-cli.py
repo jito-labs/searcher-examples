@@ -1,22 +1,21 @@
-import sys
-from dataclasses import dataclass
+import time
 from typing import List
 
 from solders.keypair import Keypair
+from solders.rpc.responses import GetBalanceResp
+
 from searcher import get_searcher_client
 from generated.searcher_pb2 import (
-    GetTipAccountsRequest,
     ConnectedLeadersRequest,
     NextScheduledLeaderRequest,
     PendingTxSubscriptionRequest,
-    PendingTxNotification,
     NextScheduledLeaderResponse,
 )
 from generated.searcher_pb2_grpc import SearcherServiceStub
 import click
 
-from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
+from solana.rpc.api import Client
 
 
 @click.group("cli")
@@ -106,11 +105,76 @@ def tip_accounts(client: SearcherServiceStub):
 
 @click.command("send-bundle")
 @click.pass_obj
-def send_bundle(client: SearcherServiceStub):
+@click.option(
+    "--rpc-url",
+    help="RPC URL path",
+    type=str,
+    required=True,
+)
+@click.option(
+    "--payer",
+    help="Path to payer keypair",
+    type=str,
+    required=True,
+)
+@click.option(
+    "--message",
+    help="Message in the bundle",
+    type=str,
+    required=True,
+)
+@click.option(
+    "--num_txs",
+    help="Number of transactions in the bundle (max is 5)",
+    type=str,
+    required=True,
+)
+@click.option(
+    "--lamports",
+    help="Number of lamports to tip in each transaction",
+    type=str,
+    required=True,
+)
+@click.option(
+    "--tip_account",
+    help="Tip account to tip",
+    type=str,
+    required=True,
+)
+def send_bundle(
+    client: SearcherServiceStub,
+    rpc_url: str,
+    payer: str,
+    message: str,
+    num_txs: int,
+    lamports: int,
+    tip_account: str,
+):
     """
     Send a bundle!
     """
-    pass
+    with open(payer) as kp_path:
+        payer_kp = Keypair.from_json(kp_path.read())
+
+    rpc_client = Client(rpc_url)
+    balance = rpc_client.get_balance(payer_kp.pubkey()).value
+    print(f"payer public key: {payer_kp.pubkey()} {balance=}")
+
+    is_leader_slot = False
+    print("waiting for jito leader...")
+    while not is_leader_slot:
+        time.sleep(0.5)
+        next_leader: NextScheduledLeaderResponse = client.GetNextScheduledLeader(
+            NextScheduledLeaderRequest()
+        )
+        num_slots_to_leader = next_leader.next_leader_slot - next_leader.current_slot
+        print(f"waiting {num_slots_to_leader} to jito leader")
+        is_leader_slot = num_slots_to_leader <= 2
+
+    blockhash = rpc_client.get_latest_blockhash().blockhash
+    txs = []
+    for idx in range(num_txs):
+        txs.append(VersionedTransaction())
 
 
 if __name__ == "__main__":
