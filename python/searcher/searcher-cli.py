@@ -126,13 +126,13 @@ def tip_accounts(client: SearcherServiceStub):
 @click.option(
     "--num_txs",
     help="Number of transactions in the bundle (max is 5)",
-    type=str,
+    type=int,
     required=True,
 )
 @click.option(
     "--lamports",
     help="Number of lamports to tip in each transaction",
-    type=str,
+    type=int,
     required=True,
 )
 @click.option(

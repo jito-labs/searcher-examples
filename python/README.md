@@ -10,11 +10,6 @@ Install pip
 $ curl -sSL https://bootstrap.pypa.io/get-pip.py | python 3 -
 ```
 
-Install virtualenv
-```bash
-$ pip3 install virtualenv
-```
-
 Install poetry
 ```bash
 $ curl -sSL https://install.python-poetry.org | python3 -
