@@ -1,26 +1,26 @@
 import time
 from typing import List
 
+import click
+from solana.rpc.api import Client
 from solana.rpc.commitment import Processed
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
-from solders.system_program import transfer, TransferParams
-from spl.memo.instructions import create_memo, MemoParams
+from solders.system_program import TransferParams, transfer
+from solders.transaction import Transaction, VersionedTransaction
+from spl.memo.instructions import MemoParams, create_memo
 
-from .generated.bundle_pb2 import Bundle
-from .convert import tx_to_protobuf_packet
-from .searcher import get_searcher_client
-from .generated.searcher_pb2 import (
+from jito_searcher_client.convert import tx_to_protobuf_packet
+from jito_searcher_client.generated.bundle_pb2 import Bundle
+from jito_searcher_client.generated.searcher_pb2 import (
     ConnectedLeadersRequest,
     NextScheduledLeaderRequest,
+    NextScheduledLeaderResponse,
     PendingTxSubscriptionRequest,
-    NextScheduledLeaderResponse, SendBundleRequest,
+    SendBundleRequest,
 )
-from generated.searcher_pb2_grpc import SearcherServiceStub
-import click
-
-from solders.transaction import VersionedTransaction, Transaction
-from solana.rpc.api import Client
+from jito_searcher_client.generated.searcher_pb2_grpc import SearcherServiceStub
+from jito_searcher_client.searcher import get_searcher_client
 
 
 @click.group("cli")

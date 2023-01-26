@@ -1,28 +1,29 @@
 import time
 from dataclasses import dataclass
-from typing import Optional, List, Tuple
+from typing import List, Optional, Tuple
 
+from grpc import (
+    StreamStreamClientInterceptor,
+    StreamUnaryClientInterceptor,
+    UnaryStreamClientInterceptor,
+    UnaryUnaryClientInterceptor,
+    intercept_channel,
+    secure_channel,
+    ssl_channel_credentials,
+)
 from grpc.aio import ClientCallDetails
+from solders.keypair import Keypair
 
-from .generated.searcher_pb2_grpc import SearcherServiceStub
-from .generated.auth_pb2_grpc import AuthServiceStub
 from .generated.auth_pb2 import (
     GenerateAuthChallengeRequest,
-    Role,
     GenerateAuthTokensRequest,
-    GenerateAuthTokensResponse, RefreshAccessTokenRequest, RefreshAccessTokenResponse,
+    GenerateAuthTokensResponse,
+    RefreshAccessTokenRequest,
+    RefreshAccessTokenResponse,
+    Role,
 )
-from grpc import (
-    intercept_channel,
-    ssl_channel_credentials,
-    secure_channel,
-    UnaryUnaryClientInterceptor,
-    UnaryStreamClientInterceptor,
-    StreamUnaryClientInterceptor,
-    StreamStreamClientInterceptor,
-)
-
-from solders.keypair import Keypair
+from .generated.auth_pb2_grpc import AuthServiceStub
+from .generated.searcher_pb2_grpc import SearcherServiceStub
 
 
 @dataclass

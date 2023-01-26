@@ -6,7 +6,10 @@ This library contains tooling to interact with Jito Lab's Block Engine as a sear
 $ pip install jito_searcher_client
 ```
 
-# Simple Example
+# Keypair Authentication
+Please request access to the block engine by creating a solana keypair and emailing the public key to support@jito.wtf.
+
+# Examples
 
 ```python
 from jito_searcher_client import get_searcher_client
@@ -24,9 +27,6 @@ client = get_searcher_client(BLOCK_ENGINE_URL, kp)
 leaders = client.GetConnectedLeaders(ConnectedLeadersRequest())
 print(f"{leaders=}")
 ```
-
-# Keypair Authentication
-Please request access to the block engine by creating a solana keypair and emailing the public key to support@jito.wtf.
 
 # Development
 

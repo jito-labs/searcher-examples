@@ -13,6 +13,7 @@ protobuf = "^4.21.12"
 solders = "^0.14.2"
 click = "^8.1.3"
 solana = "^0.29.0"
+isort = "^5.11.4"
 
 [build-system]
 requires = ["poetry-core"]
@@ -26,3 +27,6 @@ python_out = "./jito_searcher_client/generated"
 line-length = 120
 target-version = ['py37']
 include = '\.pyi?$'
+
+[tool.isort]
+extend_skip_glob = ["jito_searcher_client/generated/*"]
