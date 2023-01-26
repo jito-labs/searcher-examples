@@ -1,24 +1,25 @@
 import time
 from typing import List
 
-from solana.transaction import Transaction
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.rpc.responses import GetBalanceResp
 from solders.system_program import transfer, TransferParams
 from spl.memo.instructions import create_memo, MemoParams
 
+from generated.bundle_pb2 import Bundle
+from generated.packet_pb2 import Packet
 from searcher import get_searcher_client
 from generated.searcher_pb2 import (
     ConnectedLeadersRequest,
     NextScheduledLeaderRequest,
     PendingTxSubscriptionRequest,
-    NextScheduledLeaderResponse,
+    NextScheduledLeaderResponse, SendBundleRequest,
 )
 from generated.searcher_pb2_grpc import SearcherServiceStub
 import click
 
-from solders.transaction import VersionedTransaction
+from solders.transaction import VersionedTransaction, Transaction
 from solana.rpc.api import Client
 
 
@@ -165,21 +166,22 @@ def send_bundle(
     balance = rpc_client.get_balance(payer_kp.pubkey()).value
     print(f"payer public key: {payer_kp.pubkey()} {balance=}")
 
-    is_leader_slot = False
-    print("waiting for jito leader...")
-    while not is_leader_slot:
-        time.sleep(0.5)
-        next_leader: NextScheduledLeaderResponse = client.GetNextScheduledLeader(
-            NextScheduledLeaderRequest()
-        )
-        num_slots_to_leader = next_leader.next_leader_slot - next_leader.current_slot
-        print(f"waiting {num_slots_to_leader} slots to jito leader")
-        is_leader_slot = num_slots_to_leader <= 2
+    # is_leader_slot = False
+    # print("waiting for jito leader...")
+    # while not is_leader_slot:
+    #     time.sleep(0.5)
+    #     next_leader: NextScheduledLeaderResponse = client.GetNextScheduledLeader(
+    #         NextScheduledLeaderRequest()
+    #     )
+    #     num_slots_to_leader = next_leader.next_leader_slot - next_leader.current_slot
+    #     print(f"waiting {num_slots_to_leader} slots to jito leader")
+    #     is_leader_slot = num_slots_to_leader <= 2
 
     blockhash = rpc_client.get_latest_blockhash().value.blockhash
     print(blockhash)
 
-    txs = []
+    # Build bundle
+    txs: List[VersionedTransaction] = []
     for idx in range(num_txs):
         transfer_ix = transfer(TransferParams(
             from_pubkey=payer_kp.pubkey(),
@@ -187,10 +189,22 @@ def send_bundle(
             lamports=lamports
         ))
         memp_ix = create_memo(MemoParams(program_id=Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
-                                         signer=payer_kp.pubkey(), message=bytes(message)))
-        txs.append(Transaction(recent_blockhash=blockhash, nonce_info=None, fee_payer=payer_kp.pubkey(),
-                               instructions=[memp_ix, transfer_ix]))
-    print(txs)
+                                         signer=payer_kp.pubkey(), message=bytes(message, "utf-8")))
+        tx = Transaction.new_signed_with_payer(instructions=[memp_ix, transfer_ix],
+                                               payer=payer_kp.pubkey(),
+                                               signing_keypairs=[payer_kp],
+                                               recent_blockhash=blockhash
+                                               )
+        versioned_tx = VersionedTransaction.from_legacy(tx)
+        txs.append(versioned_tx)
+
+    for tx in txs:
+        print(tx.signatures[0])
+        print(bytes(tx))
+
+    packets = [Packet(data=bytes(tx), meta=None) for tx in txs]
+    uuid_response = client.SendBundle(SendBundleRequest(bundle=Bundle(header=None, packets=packets)))
+    print(uuid_response)
 
 
 if __name__ == "__main__":
