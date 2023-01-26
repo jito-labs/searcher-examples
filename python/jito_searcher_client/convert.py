@@ -1,6 +1,6 @@
 from solders.transaction import Transaction
 
-from generated.packet_pb2 import Packet, Meta
+from .generated.packet_pb2 import Packet, Meta
 
 
 def tx_to_protobuf_packet(tx: Transaction) -> Packet:

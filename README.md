@@ -9,7 +9,7 @@ This repository contains a few examples on how to use a searcher.
 $ curl https://sh.rustup.rs -sSf | sh
 $ source $HOME/.cargo/env
 $ git clone https://github.com/jito-labs/searcher-examples.git
-$ cd searcher-examples
+$ cd jito_searcher_client-examples
 $ git submodule update --init --recursive
 ```
 

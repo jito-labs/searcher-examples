@@ -11,7 +11,7 @@ The following program exposes functionality in the Block Engine's searcher API.
 ## Building
 ```bash
 git submodule update --init --recursive
-cargo b --release --bin jito-searcher-cli
+cargo b --release --bin jito-jito_searcher_client-cli
 ```
 
 ## Running
@@ -19,7 +19,7 @@ cargo b --release --bin jito-searcher-cli
 ### Listening to mempool
 Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG):
 ```bash
-./target/release/jito-searcher-cli \
+./target/release/jito-jito_searcher_client-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   mempool-accounts H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG
@@ -27,7 +27,7 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
 
 ### Printing out the next scheduled leader
 ```bash
-./target/release/jito-searcher-cli \
+./target/release/jito-jito_searcher_client-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   next-scheduled-leader
@@ -35,7 +35,7 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
 
 ### Getting the connected leaders
 ```bash
-./target/release/jito-searcher-cli \
+./target/release/jito-jito_searcher_client-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   connected-leaders
@@ -43,7 +43,7 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
 
 ### Getting tip accounts
 ```bash
-./target/release/jito-searcher-cli \
+./target/release/jito-jito_searcher_client-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   tip-accounts
@@ -51,7 +51,7 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
 
 ### Sending a bundle
 ```bash
-./target/release/jito-searcher-cli \
+./target/release/jito-jito_searcher_client-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   send-bundle \

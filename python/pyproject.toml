@@ -1,10 +1,10 @@
 [tool.poetry]
 name = "jito_searcher_client"
-version = "0.0.1"
+version = "0.0.3"
 description = "Jito Labs Python Searcher Client"
 authors = ["Jito Labs <support@jito.wtf>"]
 readme = "README.md"
-packages = [{ include = "searcher" }]
+packages = [{ include = "jito_searcher_client" }]
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -20,7 +20,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry-grpc-plugin]
 proto_path = "../jito_protos/protos"
-python_out = "./searcher/generated"
+python_out = "./jito_searcher_client/generated"
 
 [tool.black]
 line-length = 120

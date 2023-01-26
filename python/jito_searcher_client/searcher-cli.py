@@ -7,10 +7,10 @@ from solders.pubkey import Pubkey
 from solders.system_program import transfer, TransferParams
 from spl.memo.instructions import create_memo, MemoParams
 
-from generated.bundle_pb2 import Bundle
-from convert import tx_to_protobuf_packet
-from searcher import get_searcher_client
-from generated.searcher_pb2 import (
+from .generated.bundle_pb2 import Bundle
+from .convert import tx_to_protobuf_packet
+from .searcher import get_searcher_client
+from .generated.searcher_pb2 import (
     ConnectedLeadersRequest,
     NextScheduledLeaderRequest,
     PendingTxSubscriptionRequest,
@@ -41,7 +41,7 @@ def cli(
         block_engine_url: str,
 ):
     """
-    This script can be used to interface with the block engine as a searcher.
+    This script can be used to interface with the block engine as a jito_searcher_client.
     """
     with open(keypair_path) as kp_path:
         kp = Keypair.from_json(kp_path.read())

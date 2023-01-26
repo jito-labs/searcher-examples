@@ -2,13 +2,11 @@ import time
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
 
-from grpc._channel import _InactiveRpcError
 from grpc.aio import ClientCallDetails
 
-from generated.searcher_pb2_grpc import SearcherServiceStub
-from generated.searcher_pb2 import GetTipAccountsRequest
-from generated.auth_pb2_grpc import AuthServiceStub
-from generated.auth_pb2 import (
+from .generated.searcher_pb2_grpc import SearcherServiceStub
+from .generated.auth_pb2_grpc import AuthServiceStub
+from .generated.auth_pb2 import (
     GenerateAuthChallengeRequest,
     Role,
     GenerateAuthTokensRequest,
@@ -42,7 +40,7 @@ class SearcherInterceptor(
     StreamStreamClientInterceptor,
 ):
     """
-    The searcher interceptor is responsible for authenticating with the block engine.
+    The jito_searcher_client interceptor is responsible for authenticating with the block engine.
     Authentication happens in a challenge-response handshake.
     1. Request a challenge and provide your public key.
     2. Get challenge and sign a message "{pubkey}-{challenge}".
