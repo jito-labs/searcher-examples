@@ -89,15 +89,6 @@ def connected_leaders(client: SearcherServiceStub):
     print(f"{leaders=}")
 
 
-@click.command("connected-leaders-info")
-@click.pass_obj
-def connected_leaders_info(client: SearcherServiceStub):
-    """
-    Get connected leaders stake weight.
-    """
-    pass
-
-
 @click.command("tip-accounts")
 @click.pass_obj
 def tip_accounts(client: SearcherServiceStub):
@@ -214,7 +205,6 @@ if __name__ == "__main__":
     cli.add_command(mempool_accounts)
     cli.add_command(next_scheduled_leader)
     cli.add_command(connected_leaders)
-    cli.add_command(connected_leaders_info)
     cli.add_command(tip_accounts)
     cli.add_command(send_bundle)
     cli()

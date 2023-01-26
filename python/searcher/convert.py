@@ -1,4 +1,4 @@
-from solders.transaction import Transaction, VersionedTransaction
+from solders.transaction import Transaction
 
 from generated.packet_pb2 import Packet, Meta
 
