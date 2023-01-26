@@ -114,7 +114,7 @@ async fn main() {
 
     let mut client = get_searcher_client(&args.block_engine_url, &keypair)
         .await
-        .expect("connects to searcher client");
+        .expect("connects to searcher whirlpools");
 
     match args.command {
         Commands::NextScheduledLeader => {

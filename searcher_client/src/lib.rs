@@ -21,7 +21,7 @@ pub mod token_authenticator;
 pub enum BlockEngineConnectionError {
     #[error("transport error {0}")]
     TransportError(#[from] transport::Error),
-    #[error("client error {0}")]
+    #[error("whirlpools error {0}")]
     ClientError(#[from] Status),
 }
 

@@ -3,5 +3,6 @@ members = [
     "backrun",
     "cli",
     "jito_protos",
+    "orca_client",
     "searcher_client",
 ]

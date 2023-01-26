@@ -1,0 +1,34 @@
+[package]
+name = "orca_client"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures = "0.3.1"
+solana-client = "=1.14.13"
+solana-metrics = "=1.14.13"
+solana-sdk = "=1.14.13"
+solana-transaction-status = "=1.14.13"
+solana-program="1.14.13"
+spl-token = "3.5.0"
+spl-memo = "3.0.1"
+thiserror = "1.0.34"
+tokio = { version = "~1.14.1", features = ["rt-multi-thread"] }
+tonic = { version = "0.5.2", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+log = "0.4.17"
+jito-protos = { path = "../jito_protos" }
+jito-searcher-client = { path = "../searcher_client" }
+solana-client-helpers = "1.1.0"
+clap = {version = "4.1.4", features = ["derive", "env"]}
+
+anchor-lang = { git = "https://github.com/project-serum/anchor", tag = "v0.20.1", version = "0.20.1", package = "anchor-lang" }
+anchor-spl = { git = "https://github.com/project-serum/anchor", tag = "v0.20.1", version = "0.20.1", package = "anchor-spl" }
+anchor-client = { git = "https://github.com/project-serum/anchor", tag = "v0.20.1", version = "0.20.1", package = "anchor-client" }
+anyhow = "1.0.68"
+whirlpool = { git = "https://github.com/orca-so/whirlpools", tag = "0.2.0", package = "whirlpool", features = ["cpi"] }
+rust_decimal = { version = "1.23", features = ["maths"] }
+rust_decimal_macros = "1.23"
+env_logger = "0.10.0"
+
