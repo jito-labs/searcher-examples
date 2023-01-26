@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "jito_searcher_client"
-version = "0.0.3"
+version = "0.0.6"
 description = "Jito Labs Python Searcher Client"
 authors = ["Jito Labs <support@jito.wtf>"]
 readme = "README.md"
