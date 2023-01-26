@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "jito_searcher_client"
-version = "0.0.6"
+version = "0.0.7"
 description = "Jito Labs Python Searcher Client"
 authors = ["Jito Labs <support@jito.wtf>"]
 readme = "README.md"
@@ -29,4 +29,5 @@ target-version = ['py37']
 include = '\.pyi?$'
 
 [tool.isort]
+profile = "black"
 extend_skip_glob = ["jito_searcher_client/generated/*"]
