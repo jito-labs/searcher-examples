@@ -163,18 +163,16 @@ async fn send_bundles(
     bundles: &[BundledTransactions],
 ) -> Result<Vec<result::Result<Response<SendBundleResponse>, Status>>> {
     let mut futs = vec![];
-    for b in bundles.iter().map(|x| x.clone()) {
+    for b in bundles {
         let mut searcher_client = searcher_client.clone();
-        let task = tokio::spawn(async move {
-            send_bundle_no_wait(
-                &b.mempool_txs
-                    .into_iter()
-                    .chain(b.backrun_txs.into_iter())
-                    .collect::<Vec<VersionedTransaction>>(),
-                &mut searcher_client,
-            )
-            .await
-        });
+        let txs = b
+            .mempool_txs
+            .clone()
+            .into_iter()
+            .chain(b.backrun_txs.clone().into_iter())
+            .collect::<Vec<VersionedTransaction>>();
+        let task =
+            tokio::spawn(async move { send_bundle_no_wait(&txs, &mut searcher_client).await });
         futs.push(task);
     }
 
