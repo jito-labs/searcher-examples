@@ -4,21 +4,21 @@ use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
 use futures_util::StreamExt;
 use jito_protos::{
-    bundle::Bundle,
-    convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet},
+    convert::versioned_tx_from_packet,
     searcher::{
         searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
         GetTipAccountsRequest, NextScheduledLeaderRequest, PendingTxSubscriptionRequest,
-        SendBundleRequest, SubscribeBundleResultsRequest,
+        SubscribeBundleResultsRequest,
     },
 };
-use jito_searcher_client::{get_searcher_client, token_authenticator::ClientInterceptor};
-use log::{info, warn};
+use jito_searcher_client::{
+    get_searcher_client, send_bundle_with_confirmation, token_authenticator::ClientInterceptor,
+};
+use log::info;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    commitment_config::CommitmentConfig,
     pubkey::Pubkey,
-    signature::{read_keypair_file, Signature, Signer},
+    signature::{read_keypair_file, Signer},
     system_instruction::transfer,
     transaction::{Transaction, VersionedTransaction},
 };
@@ -256,7 +256,7 @@ async fn main() {
                     .into_inner();
                 let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
                 is_leader_slot = num_slots <= 2;
-                info!("next jito leader slot in {} slots", num_slots);
+                info!("next jito leader slot in {num_slots} slots");
                 sleep(Duration::from_millis(500)).await;
             }
 
@@ -269,56 +269,24 @@ async fn main() {
                 .map(|i| {
                     VersionedTransaction::from(Transaction::new_signed_with_payer(
                         &[
-                            build_memo(format!("jito bundle {}: {}", i, message).as_bytes(), &[]),
+                            build_memo(format!("jito bundle {i}: {message}").as_bytes(), &[]),
                             transfer(&payer_keypair.pubkey(), &tip_account, lamports),
                         ],
                         Some(&payer_keypair.pubkey()),
                         &[&payer_keypair],
-                        blockhash.clone(),
+                        blockhash,
                     ))
                 })
                 .collect();
 
-            let signatures: Vec<Signature> = txs.iter().map(|tx| tx.signatures[0]).collect();
-
-            // convert them to packets + send over
-            let packets: Vec<_> = txs.iter().map(proto_packet_from_versioned_tx).collect();
-            let result = client
-                .send_bundle(SendBundleRequest {
-                    bundle: Some(Bundle {
-                        header: None,
-                        packets,
-                    }),
-                })
-                .await
-                .expect("sends bundle");
-
-            // grab uuid from block engine + wait for results
-            let uuid = result.into_inner().uuid;
-            info!("bundle sent uuid: {:?}", uuid);
-            info!("waiting for 5 seconds to hear results...");
-            while let Ok(Some(Ok(results))) =
-                timeout(Duration::from_secs(5), bundle_results_subscription.next()).await
-            {
-                info!("bundle results: {:?}", results);
-            }
-
-            let futs: Vec<_> = signatures
-                .iter()
-                .map(|sig| {
-                    rpc_client
-                        .get_signature_status_with_commitment(sig, CommitmentConfig::processed())
-                })
-                .collect();
-            let results = futures::future::join_all(futs).await;
-            if !results.iter().all(|r| matches!(r, Ok(Some(Ok(()))))) {
-                warn!("transactions in bundle did not land :(");
-            } else {
-                info!("bundle landed successfully!!");
-                for sig in signatures {
-                    info!("https://solscan.io/tx/{}", sig);
-                }
-            }
+            send_bundle_with_confirmation(
+                &txs,
+                &rpc_client,
+                &mut client,
+                &mut bundle_results_subscription,
+            )
+            .await
+            .expect("Sending bundle failed");
         }
     }
 }

@@ -1,8 +1,8 @@
-use std::sync::RwLock;
-use std::time::SystemTime;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, RwLock},
+    time::{Duration, SystemTime},
+};
 
-use crate::BlockEngineConnectionResult;
 use jito_protos::auth::{
     auth_service_client::AuthServiceClient, GenerateAuthChallengeRequest,
     GenerateAuthTokensRequest, RefreshAccessTokenRequest, Role, Token,
@@ -12,6 +12,8 @@ use solana_metrics::datapoint_info;
 use solana_sdk::signature::{Keypair, Signer};
 use tokio::{task::JoinHandle, time::sleep};
 use tonic::{service::Interceptor, transport::Channel, Request, Status};
+
+use crate::BlockEngineConnectionResult;
 
 const AUTHORIZATION_HEADER: &str = "authorization";
 const BEARER: &str = "Bearer ";
@@ -156,7 +158,7 @@ impl Interceptor for ClientInterceptor {
         if !l_token.is_empty() {
             request.metadata_mut().insert(
                 AUTHORIZATION_HEADER,
-                format!("{}{}", BEARER, l_token).parse().unwrap(),
+                format!("{BEARER}{l_token}").parse().unwrap(),
             );
         }
 
