@@ -7,7 +7,11 @@ use std::{
 use futures_util::StreamExt;
 use jito_protos::{
     auth::{auth_service_client::AuthServiceClient, Role},
-    bundle::{bundle_result::Result as BundleResultType, Accepted, Bundle, BundleResult},
+    bundle::{
+        bundle_result::Result as BundleResultType, rejected::Reason, Accepted, Bundle,
+        BundleResult, InternalError, SimulationFailure, StateAuctionBidRejected,
+        WinningBatchBidRejected,
+    },
     convert::proto_packet_from_versioned_tx,
     searcher::{
         searcher_service_client::SearcherServiceClient, SendBundleRequest, SendBundleResponse,
@@ -39,6 +43,18 @@ pub enum BlockEngineConnectionError {
     TransportError(#[from] transport::Error),
     #[error("client error {0}")]
     ClientError(#[from] Status),
+}
+
+#[derive(Debug, Error)]
+pub enum BundleRejectionError {
+    #[error("bundle lost state auction, auction: {0}, tip {1} lamports")]
+    StateAuctionBidRejected(String, u64),
+    #[error("bundle won state auction but failed global auction, auction {0}, tip {1} lamports")]
+    WinningBatchBidRejected(String, u64),
+    #[error("bundle simulation failure on tx {0}, message: {1:?}")]
+    SimulationFailure(String, Option<String>),
+    #[error("internal error {0}")]
+    InternalError(String),
 }
 
 pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;
@@ -96,46 +112,82 @@ pub async fn send_bundle_with_confirmation(
     {
         let instant = Instant::now();
         info!("bundle results: {:?}", results);
-        if let Some(BundleResultType::Accepted(Accepted {
-            slot,
-            validator_identity,
-        })) = results.result
-        {
-            // get_block returns Json encoding by default
-            let block = rpc_client.get_block(slot).await?;
-            let block_signatures: Vec<Signature> = block
-                .transactions
-                .iter()
-                .filter_map(|tx| match &tx.transaction {
-                    EncodedTransaction::Json(encoded_tx) => Some(
-                        Signature::from_str(&encoded_tx.signatures[0])
-                            .expect("signature parse error"),
-                    ),
-                    _ => {
-                        warn!("Transaction not returned with expected Json encoding");
-                        None
+        match results.result {
+            Some(BundleResultType::Accepted(Accepted {
+                slot,
+                validator_identity,
+            })) => {
+                // get_block returns Json encoding by default
+                let block = rpc_client.get_block(slot).await?;
+                let block_signatures: Vec<Signature> = block
+                    .transactions
+                    .iter()
+                    .filter_map(|tx| match &tx.transaction {
+                        EncodedTransaction::Json(encoded_tx) => Some(
+                            Signature::from_str(&encoded_tx.signatures[0])
+                                .expect("signature parse error"),
+                        ),
+                        _ => {
+                            warn!("Transaction not returned with expected Json encoding");
+                            None
+                        }
+                    })
+                    .collect();
+                // Ensure bundle landed as a contiguous set of tx's in the block
+                if let Some(pos) = block_signatures
+                    .iter()
+                    .position(|s| s == &bundle_signatures[0])
+                {
+                    if bundle_signatures == block_signatures[pos..pos + bundle_signatures.len()] {
+                        info!("Bundle landed successfully on validator {validator_identity}");
+                        for sig in bundle_signatures {
+                            println!("https://solscan.io/tx/{sig}");
+                        }
+                        return Ok(());
                     }
-                })
-                .collect();
-            // Ensure bundle landed as a contiguous set of tx's in the block
-            if let Some(pos) = block_signatures
-                .iter()
-                .position(|s| s == &bundle_signatures[0])
-            {
-                if bundle_signatures == block_signatures[pos..pos + bundle_signatures.len()] {
-                    info!("Bundle landed successfully on validator {validator_identity}");
-                    for sig in bundle_signatures {
-                        println!("https://solscan.io/tx/{sig}");
-                    }
-                    return Ok(());
                 }
             }
+            Some(BundleResultType::Rejected(rejected)) => {
+                match rejected.reason {
+                    Some(Reason::WinningBatchBidRejected(WinningBatchBidRejected {
+                        auction_id,
+                        simulated_bid_lamports,
+                    })) => {
+                        return Err(Box::new(BundleRejectionError::WinningBatchBidRejected(
+                            auction_id,
+                            simulated_bid_lamports,
+                        )))
+                    }
+                    Some(Reason::StateAuctionBidRejected(StateAuctionBidRejected {
+                        auction_id,
+                        simulated_bid_lamports,
+                    })) => {
+                        return Err(Box::new(BundleRejectionError::StateAuctionBidRejected(
+                            auction_id,
+                            simulated_bid_lamports,
+                        )))
+                    }
+                    Some(Reason::SimulationFailure(SimulationFailure { tx_signature, msg })) => {
+                        return Err(Box::new(BundleRejectionError::SimulationFailure(
+                            tx_signature,
+                            msg,
+                        )))
+                    }
+                    Some(Reason::InternalError(InternalError { msg })) => {
+                        return Err(Box::new(BundleRejectionError::InternalError(msg)))
+                    }
+                    _ => {}
+                };
+            }
+            _ => {}
         }
         time_left -= instant.elapsed().as_millis() as u64;
     }
 
-    info!("Bundle did not land");
-    Ok(())
+    info!("Bundle confirmation timed out");
+    Err(Box::new(BlockEngineConnectionError::ClientError(
+        Status::deadline_exceeded("Searcher service did not provide bundle status in time"),
+    )))
 }
 
 pub async fn send_bundle_no_wait(
