@@ -185,8 +185,8 @@ pub async fn send_bundle_with_confirmation(
     }
 
     info!("Bundle confirmation timed out");
-    Err(Box::new(BlockEngineConnectionError::ClientError(
-        Status::deadline_exceeded("Searcher service did not provide bundle status in time"),
+    Err(Box::new(BundleRejectionError::InternalError(
+        "Searcher service did not provide bundle status in time".into(),
     )))
 }
 
