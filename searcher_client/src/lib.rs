@@ -1,4 +1,8 @@
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use futures_util::StreamExt;
 use jito_protos::{
@@ -83,9 +87,14 @@ pub async fn send_bundle_with_confirmation(
     info!("Bundle sent. UUID: {:?}", uuid);
 
     info!("Waiting for 5 seconds to hear results...");
-    while let Ok(Some(Ok(results))) =
-        timeout(Duration::from_secs(5), bundle_results_subscription.next()).await
+    let mut time_left = 5000;
+    while let Ok(Some(Ok(results))) = timeout(
+        Duration::from_millis(time_left),
+        bundle_results_subscription.next(),
+    )
+    .await
     {
+        let instant = Instant::now();
         info!("bundle results: {:?}", results);
         if let Some(BundleResultType::Accepted(Accepted {
             slot,
@@ -122,6 +131,7 @@ pub async fn send_bundle_with_confirmation(
                 }
             }
         }
+        time_left -= instant.elapsed().as_millis() as u64;
     }
 
     info!("Bundle did not land");
