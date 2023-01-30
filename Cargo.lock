@@ -1683,6 +1683,7 @@ dependencies = [
  "solana-client",
  "solana-metrics",
  "solana-sdk",
+ "solana-transaction-status",
  "thiserror",
  "tokio",
  "tonic",

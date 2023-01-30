@@ -1,21 +1,21 @@
-use std::{sync::Arc, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
 use futures_util::StreamExt;
 use jito_protos::{
     auth::{auth_service_client::AuthServiceClient, Role},
-    bundle::{Bundle, BundleResult},
+    bundle::{bundle_result::Result as BundleResultType, Accepted, Bundle, BundleResult},
     convert::proto_packet_from_versioned_tx,
     searcher::{
         searcher_service_client::SearcherServiceClient, SendBundleRequest, SendBundleResponse,
     },
 };
-use log::info;
+use log::{info, warn};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
-    commitment_config::CommitmentConfig,
     signature::{Keypair, Signature},
     transaction::VersionedTransaction,
 };
+use solana_transaction_status::EncodedTransaction;
 use thiserror::Error;
 use tokio::time::timeout;
 use tonic::{
@@ -73,7 +73,8 @@ pub async fn send_bundle_with_confirmation(
     searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     bundle_results_subscription: &mut Streaming<BundleResult>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let signatures: Vec<Signature> = transactions.iter().map(|tx| tx.signatures[0]).collect();
+    let bundle_signatures: Vec<Signature> =
+        transactions.iter().map(|tx| tx.signatures[0]).collect();
 
     let result = send_bundle_no_wait(transactions, searcher_client).await?;
 
@@ -86,23 +87,44 @@ pub async fn send_bundle_with_confirmation(
         timeout(Duration::from_secs(5), bundle_results_subscription.next()).await
     {
         info!("bundle results: {:?}", results);
-    }
-
-    let futs: Vec<_> = signatures
-        .iter()
-        .map(|sig| {
-            rpc_client.get_signature_status_with_commitment(sig, CommitmentConfig::processed())
-        })
-        .collect();
-    let results = futures::future::join_all(futs).await;
-    if !results.iter().all(|r| matches!(r, Ok(Some(Ok(()))))) {
-        info!("Transactions in bundle did not land");
-    } else {
-        info!("Bundle landed successfully");
-        for sig in signatures {
-            println!("https://solscan.io/tx/{sig}");
+        if let Some(BundleResultType::Accepted(Accepted {
+            slot,
+            validator_identity,
+        })) = results.result
+        {
+            // get_block returns Json encoding by default
+            let block = rpc_client.get_block(slot).await?;
+            let block_signatures: Vec<Signature> = block
+                .transactions
+                .iter()
+                .filter_map(|tx| match &tx.transaction {
+                    EncodedTransaction::Json(encoded_tx) => Some(
+                        Signature::from_str(&encoded_tx.signatures[0])
+                            .expect("signature parse error"),
+                    ),
+                    _ => {
+                        warn!("Transaction not returned with expected Json encoding");
+                        None
+                    }
+                })
+                .collect();
+            // Ensure bundle landed as a contiguous set of tx's in the block
+            if let Some(pos) = block_signatures
+                .iter()
+                .position(|s| s == &bundle_signatures[0])
+            {
+                if bundle_signatures == block_signatures[pos..pos + bundle_signatures.len()] {
+                    info!("Bundle landed successfully on validator {validator_identity}");
+                    for sig in bundle_signatures {
+                        println!("https://solscan.io/tx/{sig}");
+                    }
+                    return Ok(());
+                }
+            }
         }
     }
+
+    info!("Bundle did not land");
     Ok(())
 }
 
