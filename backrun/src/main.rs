@@ -13,15 +13,15 @@ use clap::Parser;
 use env_logger::TimestampPrecision;
 use histogram::Histogram;
 use jito_protos::{
-    bundle::Bundle,
-    convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet},
+    convert::versioned_tx_from_packet,
     searcher::{
         searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
-        NextScheduledLeaderRequest, PendingTxNotification, SendBundleRequest, SendBundleResponse,
+        NextScheduledLeaderRequest, PendingTxNotification, SendBundleResponse,
     },
 };
 use jito_searcher_client::{
-    get_searcher_client, token_authenticator::ClientInterceptor, BlockEngineConnectionError,
+    get_searcher_client, send_bundle_no_wait, token_authenticator::ClientInterceptor,
+    BlockEngineConnectionError,
 };
 use log::*;
 use rand::{rngs::ThreadRng, thread_rng, Rng};
@@ -165,23 +165,14 @@ async fn send_bundles(
     let mut futs = vec![];
     for b in bundles {
         let mut searcher_client = searcher_client.clone();
-        let packets = b
+        let txs = b
             .mempool_txs
-            .iter()
-            .map(proto_packet_from_versioned_tx)
-            .chain(b.backrun_txs.iter().map(proto_packet_from_versioned_tx))
-            .collect();
-
-        let task = tokio::spawn(async move {
-            searcher_client
-                .send_bundle(SendBundleRequest {
-                    bundle: Some(Bundle {
-                        header: None,
-                        packets,
-                    }),
-                })
-                .await
-        });
+            .clone()
+            .into_iter()
+            .chain(b.backrun_txs.clone().into_iter())
+            .collect::<Vec<VersionedTransaction>>();
+        let task =
+            tokio::spawn(async move { send_bundle_no_wait(&txs, &mut searcher_client).await });
         futs.push(task);
     }
 

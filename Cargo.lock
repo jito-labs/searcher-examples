@@ -1673,12 +1673,17 @@ name = "jito-searcher-client"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "futures",
+ "futures-util",
  "jito-protos",
  "log",
  "prost-types",
+ "rand 0.8.5",
  "serde",
+ "solana-client",
  "solana-metrics",
  "solana-sdk",
+ "solana-transaction-status",
  "thiserror",
  "tokio",
  "tonic",
