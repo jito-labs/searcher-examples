@@ -6,9 +6,10 @@ use futures_util::StreamExt;
 use jito_protos::{
     convert::versioned_tx_from_packet,
     searcher::{
-        searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
-        GetTipAccountsRequest, NextScheduledLeaderRequest, PendingTxSubscriptionRequest,
-        SubscribeBundleResultsRequest,
+        mempool_subscription, searcher_service_client::SearcherServiceClient,
+        ConnectedLeadersRequest, GetTipAccountsRequest, MempoolSubscription,
+        NextScheduledLeaderRequest, PendingTxNotification, ProgramSubscriptionV0,
+        SubscribeBundleResultsRequest, WriteLockedAccountSubscriptionV0,
     },
 };
 use jito_searcher_client::{
@@ -24,7 +25,7 @@ use solana_sdk::{
 };
 use spl_memo::build_memo;
 use tokio::time::{sleep, timeout};
-use tonic::{codegen::InterceptedService, transport::Channel};
+use tonic::{codegen::InterceptedService, transport::Channel, Streaming};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -44,11 +45,17 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Subscribe to slot updates from Geyser
+    /// Subscribe to mempool accounts
     MempoolAccounts {
         /// A space-separated list of accounts to subscribe to
         #[clap(required = true)]
         accounts: Vec<String>,
+    },
+    /// Subscribe to mempool by program IDs
+    MempoolPrograms {
+        /// A space-separated list of programs to subscribe to
+        #[clap(required = true)]
+        programs: Vec<String>,
     },
     /// Print out information on the next scheduled leader
     NextScheduledLeader,
@@ -181,42 +188,39 @@ async fn main() {
         }
         Commands::MempoolAccounts { accounts } => {
             info!(
-                "waiting for pending transactions for accounts: {:?}",
+                "waiting for mempool transactions that write-locks accounts: {:?}",
                 accounts
             );
-            let mut pending_transactions = client
-                .subscribe_pending_transactions(PendingTxSubscriptionRequest { accounts })
+            let pending_transactions = client
+                .subscribe_mempool(MempoolSubscription {
+                    msg: Some(mempool_subscription::Msg::WlaV0Sub(
+                        WriteLockedAccountSubscriptionV0 { accounts },
+                    )),
+                })
                 .await
-                .expect("subscribes to pending transactions")
+                .expect("subscribes to pending transactions by write-locked accounts")
                 .into_inner();
 
             print_next_leader_info(&mut client).await;
+            print_packet_stream(&mut client, pending_transactions).await;
+        }
+        Commands::MempoolPrograms { programs } => {
+            info!(
+                "waiting for mempool transactions that mention programs: {:?}",
+                programs
+            );
+            let pending_transactions = client
+                .subscribe_mempool(MempoolSubscription {
+                    msg: Some(mempool_subscription::Msg::ProgramV0Sub(
+                        ProgramSubscriptionV0 { programs },
+                    )),
+                })
+                .await
+                .expect("subscribes to pending transactions by program id")
+                .into_inner();
 
-            loop {
-                match timeout(Duration::from_secs(5), pending_transactions.next()).await {
-                    Ok(Some(Ok(notification))) => {
-                        let transactions: Vec<VersionedTransaction> = notification
-                            .transactions
-                            .iter()
-                            .filter_map(versioned_tx_from_packet)
-                            .collect();
-                        for tx in transactions {
-                            info!("tx sig: {:?}", tx.signatures[0]);
-                        }
-                    }
-                    Ok(Some(Err(e))) => {
-                        info!("error from pending transaction stream: {:?}", e);
-                        break;
-                    }
-                    Ok(None) => {
-                        info!("pending transaction stream closed");
-                        break;
-                    }
-                    Err(_) => {
-                        print_next_leader_info(&mut client).await;
-                    }
-                }
-            }
+            print_next_leader_info(&mut client).await;
+            print_packet_stream(&mut client, pending_transactions).await;
         }
         Commands::SendBundle {
             rpc_url,
@@ -287,6 +291,37 @@ async fn main() {
             )
             .await
             .expect("Sending bundle failed");
+        }
+    }
+}
+
+async fn print_packet_stream(
+    client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+    mut pending_transactions: Streaming<PendingTxNotification>,
+) {
+    loop {
+        match timeout(Duration::from_secs(5), pending_transactions.next()).await {
+            Ok(Some(Ok(notification))) => {
+                let transactions: Vec<VersionedTransaction> = notification
+                    .transactions
+                    .iter()
+                    .filter_map(versioned_tx_from_packet)
+                    .collect();
+                for tx in transactions {
+                    info!("tx sig: {:?}", tx.signatures[0]);
+                }
+            }
+            Ok(Some(Err(e))) => {
+                info!("error from pending transaction stream: {:?}", e);
+                break;
+            }
+            Ok(None) => {
+                info!("pending transaction stream closed");
+                break;
+            }
+            Err(_) => {
+                print_next_leader_info(client).await;
+            }
         }
     }
 }
