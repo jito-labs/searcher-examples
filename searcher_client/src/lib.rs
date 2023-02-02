@@ -1,5 +1,4 @@
 use std::{
-    str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -24,9 +23,8 @@ use solana_sdk::{
     signature::{Keypair, Signature},
     transaction::VersionedTransaction,
 };
-use solana_transaction_status::EncodedTransaction;
 use thiserror::Error;
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use tonic::{
     codegen::InterceptedService,
     transport,
