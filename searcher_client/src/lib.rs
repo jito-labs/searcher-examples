@@ -126,7 +126,6 @@ pub async fn send_bundle_with_confirmation(
                             CommitmentConfig::processed(),
                         )
                     })
-                    .clone()
                     .collect();
                 let results = futures::future::join_all(futs).await;
                 if !results.iter().all(|r| matches!(r, Ok(Some(Ok(()))))) {
