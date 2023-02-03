@@ -1,7 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
 use futures_util::StreamExt;
-use jito_protos::searcher::{PendingTxNotification, PendingTxSubscriptionRequest};
+use jito_protos::{
+    bundle::BundleResult,
+    searcher::{
+        PendingTxNotification, PendingTxSubscriptionRequest, SubscribeBundleResultsRequest,
+    },
+};
 use jito_searcher_client::get_searcher_client;
 use log::info;
 use solana_client::{
@@ -19,6 +24,7 @@ use solana_sdk::{
 };
 use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use tokio::{sync::mpsc::Sender, time::sleep};
+use tonic::Streaming;
 
 // slot update subscription loop that attempts to maintain a connection to an RPC server
 pub async fn slot_subscribe_loop(pubsub_addr: String, slot_sender: Sender<Slot>) {
@@ -214,6 +220,73 @@ pub async fn pending_tx_loop(
                     ("errors", num_searcher_connection_errors, i64),
                     ("error_str", e.to_string(), String)
                 );
+            }
+        }
+    }
+}
+
+pub async fn bundle_results_loop(
+    block_engine_addr: String,
+    auth_keypair: Arc<Keypair>,
+    bundle_results_sender: Sender<BundleResult>,
+) {
+    let mut connection_errors: usize = 0;
+    let mut response_errors: usize = 0;
+
+    loop {
+        sleep(Duration::from_millis(1000)).await;
+        match get_searcher_client(&block_engine_addr, &auth_keypair).await {
+            Ok(mut c) => match c
+                .subscribe_bundle_results(SubscribeBundleResultsRequest {})
+                .await
+            {
+                Ok(resp) => {
+                    consume_bundle_results_stream(resp.into_inner(), &bundle_results_sender).await;
+                }
+                Err(e) => {
+                    response_errors += 1;
+                    datapoint_error!(
+                        "searcher_bundle_results_error",
+                        ("errors", response_errors, i64),
+                        ("msg", e.to_string(), String)
+                    );
+                }
+            },
+            Err(e) => {
+                connection_errors += 1;
+                datapoint_error!(
+                    "searcher_bundle_results_error",
+                    ("errors", connection_errors, i64),
+                    ("msg", e.to_string(), String)
+                );
+            }
+        }
+    }
+}
+
+pub async fn consume_bundle_results_stream(
+    mut stream: Streaming<BundleResult>,
+    bundle_results_sender: &Sender<BundleResult>,
+) {
+    while let Some(maybe_msg) = stream.next().await {
+        match maybe_msg {
+            Ok(msg) => {
+                if let Err(e) = bundle_results_sender.send(msg).await {
+                    datapoint_error!(
+                        "searcher_bundle_results_error",
+                        ("errors", 1, i64),
+                        ("msg", e.to_string(), String)
+                    );
+                    return;
+                }
+            }
+            Err(e) => {
+                datapoint_error!(
+                    "searcher_bundle_results_error",
+                    ("errors", 1, i64),
+                    ("msg", e.to_string(), String)
+                );
+                return;
             }
         }
     }
