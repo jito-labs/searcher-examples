@@ -205,10 +205,7 @@ async fn main() {
             print_packet_stream(&mut client, pending_transactions).await;
         }
         Commands::MempoolPrograms { programs } => {
-            info!(
-                "waiting for mempool transactions that mention programs: {:?}",
-                programs
-            );
+            info!("waiting for mempool transactions that mention programs: {programs:?}");
             let pending_transactions = client
                 .subscribe_mempool(MempoolSubscription {
                     msg: Some(mempool_subscription::Msg::ProgramV0Sub(
