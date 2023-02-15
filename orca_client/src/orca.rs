@@ -1,7 +1,3 @@
-use ::whirlpool::{
-    math::MIN_SQRT_PRICE_X64,
-    state::{TickArray, Whirlpool},
-};
 use anchor_client::Program;
 use anchor_lang::{
     prelude::*,
@@ -13,6 +9,10 @@ use solana_client_helpers::{
     spl_associated_token_account::get_associated_token_address, Client as SolanaClient,
 };
 use spl_token::ID as TOKEN_PROGRAM_ID;
+use whirlpool::{
+    math::MIN_SQRT_PRICE_X64,
+    state::{TickArray, Whirlpool},
+};
 
 use crate::orca_utils::*;
 

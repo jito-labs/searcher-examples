@@ -1,15 +1,13 @@
 mod orca;
 mod orca_utils;
-mod send_bundle;
 
 use std::{env, rc::Rc, sync::Arc};
 
 use anchor_client::{Client as AnchorClient, Cluster};
 use clap::Parser;
 use env_logger::TimestampPrecision;
-use jito_searcher_client::get_searcher_client;
+use jito_searcher_client::{build_and_send_bundle, get_searcher_client};
 use orca::swap;
-use send_bundle::build_and_send_bundle;
 use solana_client::rpc_client::RpcClient;
 use solana_client_helpers::Client as SolanaClient;
 use solana_sdk::{
@@ -33,9 +31,12 @@ struct Args {
 
     #[clap(long, env)]
     block_engine_url: String,
+
+    #[clap(long, env)]
+    tip_account: String,
 }
 
-/// Example of how to build orca swap from SAMO-> USDC and submit as a bundle
+/// Example of how to build orca swap from SAMO-> USDC with a memo and submit as a bundle
 fn main() {
     let args: Args = Args::parse();
     if env::var("RUST_LOG").is_err() {
@@ -104,13 +105,12 @@ fn main() {
             get_searcher_client(args.block_engine_url.as_str(), &auth_keypair)
                 .await
                 .unwrap();
-        println!("sending bundle now!");
         build_and_send_bundle(
             args.rpc_url.clone(),
             vec![tx_1, tx_0.clone()],
             args.keypair_path.clone().to_string(),
             100_000,
-            "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5".to_string(),
+            args.tip_account,
             &mut searcher_client,
         )
         .await;

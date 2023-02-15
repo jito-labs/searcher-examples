@@ -1,4 +1,4 @@
-/// Helper functions courtesy of @yugure-orca
+/// Helper functions courtesy of @yugure-orca ( https://github.com/yugure-orca/whirlpools )
 use std::cell::RefCell;
 
 use anchor_client::solana_sdk::pubkey::Pubkey;

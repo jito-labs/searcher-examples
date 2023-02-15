@@ -1928,6 +1928,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "jito-orca-client"
+version = "0.1.0"
+dependencies = [
+ "anchor-client",
+ "anchor-lang",
+ "anchor-spl",
+ "anyhow",
+ "clap 4.1.4",
+ "env_logger 0.10.0",
+ "futures",
+ "jito-protos",
+ "jito-searcher-client",
+ "log",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "solana-client",
+ "solana-client-helpers",
+ "solana-metrics",
+ "solana-program",
+ "solana-sdk",
+ "solana-transaction-status",
+ "spl-memo",
+ "spl-token",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "whirlpool",
+]
+
+[[package]]
 name = "jito-protos"
 version = "0.1.0"
 dependencies = [
@@ -1973,10 +2003,13 @@ name = "jito-searcher-client"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "futures",
+ "futures-util",
  "jito-protos",
  "log",
  "prost-types",
  "serde",
+ "solana-client",
  "solana-metrics",
  "solana-sdk",
  "thiserror",
@@ -2492,36 +2525,6 @@ name = "openssl-probe"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
-
-[[package]]
-name = "orca_client"
-version = "0.1.0"
-dependencies = [
- "anchor-client",
- "anchor-lang",
- "anchor-spl",
- "anyhow",
- "clap 4.1.4",
- "env_logger 0.10.0",
- "futures",
- "jito-protos",
- "jito-searcher-client",
- "log",
- "rust_decimal",
- "rust_decimal_macros",
- "solana-client",
- "solana-client-helpers",
- "solana-metrics",
- "solana-program",
- "solana-sdk",
- "solana-transaction-status",
- "spl-memo",
- "spl-token",
- "thiserror",
- "tokio",
- "tonic",
- "whirlpool",
-]
 
 [[package]]
 name = "os_str_bytes"
