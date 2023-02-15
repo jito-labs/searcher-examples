@@ -1,5 +1,4 @@
 use std::{
-    str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -20,10 +19,10 @@ use jito_protos::{
 use log::{info, warn};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
+    commitment_config::CommitmentConfig,
     signature::{Keypair, Signature},
     transaction::VersionedTransaction,
 };
-use solana_transaction_status::EncodedTransaction;
 use thiserror::Error;
 use tokio::time::timeout;
 use tonic::{
@@ -114,39 +113,9 @@ pub async fn send_bundle_with_confirmation(
         info!("bundle results: {:?}", results);
         match results.result {
             Some(BundleResultType::Accepted(Accepted {
-                slot,
-                validator_identity,
-            })) => {
-                // get_block returns Json encoding by default
-                let block = rpc_client.get_block(slot).await?;
-                let block_signatures: Vec<Signature> = block
-                    .transactions
-                    .iter()
-                    .filter_map(|tx| match &tx.transaction {
-                        EncodedTransaction::Json(encoded_tx) => Some(
-                            Signature::from_str(&encoded_tx.signatures[0])
-                                .expect("signature parse error"),
-                        ),
-                        _ => {
-                            warn!("Transaction not returned with expected Json encoding");
-                            None
-                        }
-                    })
-                    .collect();
-                // Ensure bundle landed as a contiguous set of tx's in the block
-                if let Some(pos) = block_signatures
-                    .iter()
-                    .position(|s| s == &bundle_signatures[0])
-                {
-                    if bundle_signatures == block_signatures[pos..pos + bundle_signatures.len()] {
-                        info!("Bundle landed successfully on validator {validator_identity}");
-                        for sig in bundle_signatures {
-                            println!("https://solscan.io/tx/{sig}");
-                        }
-                        return Ok(());
-                    }
-                }
-            }
+                slot: _s,
+                validator_identity: _v,
+            })) => {}
             Some(BundleResultType::Rejected(rejected)) => {
                 match rejected.reason {
                     Some(Reason::WinningBatchBidRejected(WinningBatchBidRejected {
@@ -186,10 +155,24 @@ pub async fn send_bundle_with_confirmation(
         time_left -= instant.elapsed().as_millis() as u64;
     }
 
-    info!("Bundle confirmation timed out");
-    Err(Box::new(BundleRejectionError::InternalError(
-        "Searcher service did not provide bundle status in time".into(),
-    )))
+    let futs: Vec<_> = bundle_signatures
+        .iter()
+        .map(|sig| {
+            rpc_client.get_signature_status_with_commitment(sig, CommitmentConfig::processed())
+        })
+        .collect();
+    let results = futures::future::join_all(futs).await;
+    if !results.iter().all(|r| matches!(r, Ok(Some(Ok(()))))) {
+        warn!("Transactions in bundle did not land");
+        return Err(Box::new(BundleRejectionError::InternalError(
+            "Searcher service did not provide bundle status in time".into(),
+        )));
+    }
+    info!("Bundle landed successfully");
+    for sig in bundle_signatures.iter() {
+        info!("https://solscan.io/tx/{}", sig);
+    }
+    Ok(())
 }
 
 pub async fn send_bundle_no_wait(

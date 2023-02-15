@@ -18,6 +18,7 @@ use jito_searcher_client::{
 use log::info;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
+    commitment_config::CommitmentConfig,
     pubkey::Pubkey,
     signature::{read_keypair_file, Signer},
     system_instruction::transfer,
@@ -229,7 +230,7 @@ async fn main() {
         } => {
             let payer_keypair = read_keypair_file(payer).expect("reads keypair at path");
             let tip_account = Pubkey::from_str(&tip_account).expect("valid pubkey for tip account");
-            let rpc_client = RpcClient::new(rpc_url);
+            let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
             let balance = rpc_client
                 .get_balance(&payer_keypair.pubkey())
                 .await
