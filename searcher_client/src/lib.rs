@@ -115,26 +115,7 @@ pub async fn send_bundle_with_confirmation(
             Some(BundleResultType::Accepted(Accepted {
                 slot: _s,
                 validator_identity: _v,
-            })) => {
-                let futs: Vec<_> = bundle_signatures
-                    .iter()
-                    .map(|sig| {
-                        rpc_client.get_signature_status_with_commitment(
-                            sig,
-                            CommitmentConfig::processed(),
-                        )
-                    })
-                    .collect();
-                let results = futures::future::join_all(futs).await;
-                if !results.iter().all(|r| matches!(r, Ok(Some(Ok(()))))) {
-                    warn!("Transactions in bundle did not land");
-                } else {
-                    info!("Bundle landed successfully");
-                    for sig in bundle_signatures.iter() {
-                        info!("https://solscan.io/tx/{}", sig);
-                    }
-                }
-            }
+            })) => {}
             Some(BundleResultType::Rejected(rejected)) => {
                 match rejected.reason {
                     Some(Reason::WinningBatchBidRejected(WinningBatchBidRejected {
@@ -172,10 +153,24 @@ pub async fn send_bundle_with_confirmation(
         time_left -= instant.elapsed().as_millis() as u64;
     }
 
-    info!("Bundle confirmation timed out");
-    Err(Box::new(BundleRejectionError::InternalError(
-        "Searcher service did not provide bundle status in time".into(),
-    )))
+    let futs: Vec<_> = bundle_signatures
+        .iter()
+        .map(|sig| {
+            rpc_client.get_signature_status_with_commitment(sig, CommitmentConfig::processed())
+        })
+        .collect();
+    let results = futures::future::join_all(futs).await;
+    if !results.iter().all(|r| matches!(r, Ok(Some(Ok(()))))) {
+        warn!("Transactions in bundle did not land");
+        return Err(Box::new(BundleRejectionError::InternalError(
+            "Searcher service did not provide bundle status in time".into(),
+        )));
+    }
+    info!("Bundle landed successfully");
+    for sig in bundle_signatures.iter() {
+        info!("https://solscan.io/tx/{}", sig);
+    }
+    Ok(())
 }
 
 pub async fn send_bundle_no_wait(
