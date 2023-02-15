@@ -8,7 +8,7 @@ use clap::Parser;
 use env_logger::TimestampPrecision;
 use jito_searcher_client::{build_and_send_bundle, get_searcher_client};
 use orca::swap;
-use solana_client::rpc_client::RpcClient;
+use solana_client::{nonblocking::rpc_client::RpcClient as AsyncRpcClient, rpc_client::RpcClient};
 use solana_client_helpers::Client as SolanaClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
@@ -106,7 +106,7 @@ fn main() {
                 .await
                 .unwrap();
         build_and_send_bundle(
-            args.rpc_url.clone(),
+            &AsyncRpcClient::new(args.rpc_url.clone()),
             vec![tx_1, tx_0.clone()],
             args.keypair_path.clone().to_string(),
             100_000,

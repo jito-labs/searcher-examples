@@ -72,7 +72,7 @@ pub async fn create_grpc_channel(url: &str) -> BlockEngineConnectionResult<Chann
 
 /// Builds and send bundle, attaching the tip and waiting until the next leader
 pub async fn build_and_send_bundle(
-    rpc_url: String,
+    rpc_client: &RpcClient,
     bundle: Vec<VersionedTransaction>,
     keypair_path: String,
     tip_lamports: u64,
@@ -81,7 +81,6 @@ pub async fn build_and_send_bundle(
 ) {
     let payer_keypair = read_keypair_file(keypair_path).expect("reads keypair at path");
     let tip_account = Pubkey::from_str(&tip_account).expect("valid pubkey for tip account");
-    let rpc_client = RpcClient::new(rpc_url);
     let balance = rpc_client
         .get_balance(&payer_keypair.pubkey())
         .await

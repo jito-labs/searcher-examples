@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
 use futures_util::StreamExt;
 use jito_protos::{
-    convert::{versioned_tx_from_packet},
+    convert::versioned_tx_from_packet,
     searcher::{
         searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
         GetTipAccountsRequest, NextScheduledLeaderRequest, PendingTxSubscriptionRequest,
@@ -13,7 +13,7 @@ use jito_protos::{
 use jito_searcher_client::{
     build_and_send_bundle, get_searcher_client, token_authenticator::ClientInterceptor,
 };
-use log::{info};
+use log::info;
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     pubkey::Pubkey,
@@ -22,7 +22,7 @@ use solana_sdk::{
     transaction::{Transaction, VersionedTransaction},
 };
 use spl_memo::build_memo;
-use tokio::time::{timeout};
+use tokio::time::timeout;
 use tonic::{codegen::InterceptedService, transport::Channel};
 
 #[derive(Parser, Debug)]
@@ -251,7 +251,7 @@ async fn main() {
                 .collect();
 
             build_and_send_bundle(
-                rpc_url.clone(),
+                &rpc_client,
                 txs,
                 payer.clone(),
                 lamports,
