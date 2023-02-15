@@ -151,7 +151,7 @@ fn build_bundles(
                             .as_bytes(),
                         &[],
                     ),
-                    transfer(&keypair.pubkey(), &tip_account, 1),
+                    transfer(&keypair.pubkey(), &tip_account, 10_000),
                 ],
                 Some(&keypair.pubkey()),
                 &[keypair],
