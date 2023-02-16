@@ -2068,7 +2068,7 @@ dependencies = [
  "solana-transaction-status",
  "thiserror",
  "tokio",
- "tonic 0.5.2",
+ "tonic 0.8.3",
 ]
 
 [[package]]

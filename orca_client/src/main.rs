@@ -102,21 +102,24 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     rt.block_on(async {
-        let mut bundle_results_subscription = client
-            .subscribe_bundle_results(SubscribeBundleResultsRequest {})
-            .await
-            .expect("subscribe to bundle results")
-            .into_inner();
         let mut searcher_client =
             get_searcher_client(args.block_engine_url.as_str(), &auth_keypair)
                 .await
                 .unwrap();
+
+        let mut bundle_results_subscription = searcher_client
+            .subscribe_bundle_results(SubscribeBundleResultsRequest {})
+            .await
+            .expect("subscribe to bundle results")
+            .into_inner();
 
         send_bundle_with_confirmation(
             &[tx_0, tx_1],
             &AsyncRpcClient::new(args.rpc_url.clone()),
             &mut searcher_client,
             &mut bundle_results_subscription,
-        );
+        )
+        .await
+        .unwrap();
     });
 }
