@@ -11,6 +11,7 @@ use std::{
 
 use clap::Parser;
 use env_logger::TimestampPrecision;
+use futures_util::StreamExt;
 use histogram::Histogram;
 use jito_protos::{
     bundle::Bundle,
@@ -18,6 +19,7 @@ use jito_protos::{
     searcher::{
         searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
         NextScheduledLeaderRequest, PendingTxNotification, SendBundleRequest, SendBundleResponse,
+        SubscribeBundleResultsRequest,
     },
 };
 use jito_searcher_client::{
@@ -46,7 +48,7 @@ use thiserror::Error;
 use tokio::{
     runtime::Builder,
     sync::mpsc::{channel, Receiver},
-    time::interval,
+    time::{interval, timeout},
 };
 use tonic::{codegen::InterceptedService, transport::Channel, Response, Status};
 
@@ -144,7 +146,7 @@ fn build_bundles(
                             .as_bytes(),
                         &[],
                     ),
-                    transfer(&keypair.pubkey(), &tip_account, 1),
+                    transfer(&keypair.pubkey(), &tip_account, 10_000),
                 ],
                 Some(&keypair.pubkey()),
                 &[keypair],
@@ -513,6 +515,11 @@ async fn run_searcher_loop(
 
     let mut highest_slot = 0;
     let mut is_leader_slot = false;
+    let mut bundle_results_subscription = searcher_client
+        .subscribe_bundle_results(SubscribeBundleResultsRequest {})
+        .await
+        .expect("subscribe to bundle results")
+        .into_inner();
 
     let mut tick = interval(Duration::from_secs(5));
     loop {
@@ -531,6 +538,13 @@ async fn run_searcher_loop(
                         let results = send_bundles(&mut searcher_client, &bundles).await?;
                         let send_elapsed = now.elapsed().as_micros() as u64;
                         let send_rt_pp_us = send_elapsed / bundles.len() as u64;
+
+                        while let Ok(Some(Ok(results))) =
+                            timeout(Duration::from_secs(5), bundle_results_subscription.next()).await
+                        {
+                            info!("bundle results: {:?}", results);
+                        }
+
 
                         match block_stats.entry(highest_slot) {
                             Entry::Occupied(mut entry) => {
