@@ -6,7 +6,8 @@ use std::{env, rc::Rc, sync::Arc};
 use anchor_client::{Client as AnchorClient, Cluster};
 use clap::Parser;
 use env_logger::TimestampPrecision;
-use jito_searcher_client::{build_and_send_bundle, get_searcher_client};
+use jito_protos::searcher::SubscribeBundleResultsRequest;
+use jito_searcher_client::{get_searcher_client, send_bundle_with_confirmation};
 use orca::swap;
 use solana_client::{nonblocking::rpc_client::RpcClient as AsyncRpcClient, rpc_client::RpcClient};
 use solana_client_helpers::Client as SolanaClient;
@@ -83,12 +84,6 @@ fn main() {
         read_keypair_file(args.keypair_path.clone()).expect("example requires a keypair file");
     // TODO: make these mutable so that we can pass in a more recent blockhash once jito is leader
     let tx_0 = VersionedTransaction::from(Transaction::new_signed_with_payer(
-        instructions.as_ref(),
-        Some(&payer_pubkey),
-        &[&payer],
-        blockhash.clone(),
-    ));
-    let tx_1 = VersionedTransaction::from(Transaction::new_signed_with_payer(
         &[build_memo(
             format!("i b swimmin in da mempool 🏊🏊🏊🏊").as_bytes(),
             &[],
@@ -97,22 +92,31 @@ fn main() {
         &[&payer],
         blockhash.clone(),
     ));
+    let tx_1 = VersionedTransaction::from(Transaction::new_signed_with_payer(
+        instructions.as_ref(),
+        Some(&payer_pubkey),
+        &[&payer],
+        blockhash.clone(),
+    ));
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     rt.block_on(async {
+        let mut bundle_results_subscription = client
+            .subscribe_bundle_results(SubscribeBundleResultsRequest {})
+            .await
+            .expect("subscribe to bundle results")
+            .into_inner();
         let mut searcher_client =
             get_searcher_client(args.block_engine_url.as_str(), &auth_keypair)
                 .await
                 .unwrap();
-        build_and_send_bundle(
+
+        send_bundle_with_confirmation(
+            &[tx_0, tx_1],
             &AsyncRpcClient::new(args.rpc_url.clone()),
-            vec![tx_1, tx_0.clone()],
-            args.keypair_path.clone().to_string(),
-            100_000,
-            args.tip_account,
             &mut searcher_client,
-        )
-        .await;
+            &mut bundle_results_subscription,
+        );
     });
 }

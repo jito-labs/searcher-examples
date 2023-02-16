@@ -11,19 +11,18 @@ use std::{
 
 use clap::Parser;
 use env_logger::TimestampPrecision;
-use futures_util::StreamExt;
 use histogram::Histogram;
 use jito_protos::{
-    bundle::Bundle,
-    convert::{proto_packet_from_versioned_tx, versioned_tx_from_packet},
+    bundle::BundleResult,
+    convert::versioned_tx_from_packet,
     searcher::{
         searcher_service_client::SearcherServiceClient, ConnectedLeadersRequest,
-        NextScheduledLeaderRequest, PendingTxNotification, SendBundleRequest, SendBundleResponse,
-        SubscribeBundleResultsRequest,
+        NextScheduledLeaderRequest, PendingTxNotification, SendBundleResponse,
     },
 };
 use jito_searcher_client::{
-    get_searcher_client, token_authenticator::ClientInterceptor, BlockEngineConnectionError,
+    get_searcher_client, send_bundle_no_wait, token_authenticator::ClientInterceptor,
+    BlockEngineConnectionError,
 };
 use log::*;
 use rand::{rngs::ThreadRng, thread_rng, Rng};
@@ -48,11 +47,13 @@ use thiserror::Error;
 use tokio::{
     runtime::Builder,
     sync::mpsc::{channel, Receiver},
-    time::{interval, timeout},
+    time::interval,
 };
 use tonic::{codegen::InterceptedService, transport::Channel, Response, Status};
 
-use crate::event_loops::{block_subscribe_loop, pending_tx_loop, slot_subscribe_loop};
+use crate::event_loops::{
+    block_subscribe_loop, bundle_results_loop, pending_tx_loop, slot_subscribe_loop,
+};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -88,6 +89,10 @@ struct Args {
     /// Tip program public key
     #[clap(long, env)]
     tip_program_id: String,
+
+    /// Subscribe and print bundle results.
+    #[clap(long, env)]
+    subscribe_bundle_results: bool,
 }
 
 #[derive(Debug, Error)]
@@ -167,23 +172,14 @@ async fn send_bundles(
     let mut futs = vec![];
     for b in bundles {
         let mut searcher_client = searcher_client.clone();
-        let packets = b
+        let txs = b
             .mempool_txs
-            .iter()
-            .map(proto_packet_from_versioned_tx)
-            .chain(b.backrun_txs.iter().map(proto_packet_from_versioned_tx))
-            .collect();
-
-        let task = tokio::spawn(async move {
-            searcher_client
-                .send_bundle(SendBundleRequest {
-                    bundle: Some(Bundle {
-                        header: None,
-                        packets,
-                    }),
-                })
-                .await
-        });
+            .clone()
+            .into_iter()
+            .chain(b.backrun_txs.clone().into_iter())
+            .collect::<Vec<VersionedTransaction>>();
+        let task =
+            tokio::spawn(async move { send_bundle_no_wait(&txs, &mut searcher_client).await });
         futs.push(task);
     }
 
@@ -492,6 +488,7 @@ async fn run_searcher_loop(
     tip_program_pubkey: Pubkey,
     mut slot_receiver: Receiver<Slot>,
     mut block_receiver: Receiver<rpc_response::Response<RpcBlockUpdate>>,
+    mut bundle_results_receiver: Receiver<BundleResult>,
     mut pending_tx_receiver: Receiver<PendingTxNotification>,
 ) -> Result<()> {
     let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
@@ -515,17 +512,16 @@ async fn run_searcher_loop(
 
     let mut highest_slot = 0;
     let mut is_leader_slot = false;
-    let mut bundle_results_subscription = searcher_client
-        .subscribe_bundle_results(SubscribeBundleResultsRequest {})
-        .await
-        .expect("subscribe to bundle results")
-        .into_inner();
 
     let mut tick = interval(Duration::from_secs(5));
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash).await?;
+            }
+            maybe_bundle_result = bundle_results_receiver.recv() => {
+                let bundle_result: BundleResult = maybe_bundle_result.ok_or(BackrunError::Shutdown)?;
+                info!("received bundle_result: [bundle_id={:?}, result={:?}]", bundle_result.bundle_id, bundle_result.result);
             }
             maybe_pending_tx_notification = pending_tx_receiver.recv() => {
                 // block engine starts forwarding a few slots early, for super high activity accounts
@@ -538,13 +534,6 @@ async fn run_searcher_loop(
                         let results = send_bundles(&mut searcher_client, &bundles).await?;
                         let send_elapsed = now.elapsed().as_micros() as u64;
                         let send_rt_pp_us = send_elapsed / bundles.len() as u64;
-
-                        while let Ok(Some(Ok(results))) =
-                            timeout(Duration::from_secs(5), bundle_results_subscription.next()).await
-                        {
-                            info!("bundle results: {:?}", results);
-                        }
-
 
                         match block_stats.entry(highest_slot) {
                             Entry::Occupied(mut entry) => {
@@ -602,6 +591,7 @@ fn main() -> Result<()> {
     runtime.block_on(async move {
         let (slot_sender, slot_receiver) = channel(100);
         let (block_sender, block_receiver) = channel(100);
+        let (bundle_results_sender, bundle_results_receiver) = channel(100);
         let (pending_tx_sender, pending_tx_receiver) = channel(100);
 
         tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
@@ -613,6 +603,14 @@ fn main() -> Result<()> {
             backrun_pubkeys,
         ));
 
+        if args.subscribe_bundle_results {
+            tokio::spawn(bundle_results_loop(
+                args.block_engine_addr.clone(),
+                auth_keypair.clone(),
+                bundle_results_sender,
+            ));
+        }
+
         let result = run_searcher_loop(
             args.block_engine_addr,
             auth_keypair,
@@ -622,6 +620,7 @@ fn main() -> Result<()> {
             tip_program_pubkey,
             slot_receiver,
             block_receiver,
+            bundle_results_receiver,
             pending_tx_receiver,
         )
         .await;

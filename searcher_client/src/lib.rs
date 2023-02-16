@@ -1,31 +1,35 @@
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use futures_util::StreamExt;
 use jito_protos::{
     auth::{auth_service_client::AuthServiceClient, Role},
-    bundle::Bundle,
+    bundle::{
+        bundle_result::Result as BundleResultType, rejected::Reason, Accepted, Bundle,
+        BundleResult, InternalError, SimulationFailure, StateAuctionBidRejected,
+        WinningBatchBidRejected,
+    },
     convert::proto_packet_from_versioned_tx,
     searcher::{
-        searcher_service_client::SearcherServiceClient, NextScheduledLeaderRequest,
-        SendBundleRequest, SubscribeBundleResultsRequest,
+        searcher_service_client::SearcherServiceClient, SendBundleRequest, SendBundleResponse,
     },
 };
-use log::info;
+use log::{info, warn};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
-    pubkey::Pubkey,
-    signature::{read_keypair_file, Keypair, Signature, Signer},
-    system_instruction::transfer,
-    transaction::{Transaction, VersionedTransaction},
+    signature::{Keypair, Signature},
+    transaction::VersionedTransaction,
 };
 use thiserror::Error;
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 use tonic::{
     codegen::InterceptedService,
     transport,
     transport::{Channel, Endpoint},
-    Status,
+    Response, Status, Streaming,
 };
 
 use crate::token_authenticator::ClientInterceptor;
@@ -36,8 +40,20 @@ pub mod token_authenticator;
 pub enum BlockEngineConnectionError {
     #[error("transport error {0}")]
     TransportError(#[from] transport::Error),
-    #[error("whirlpools error {0}")]
+    #[error("client error {0}")]
     ClientError(#[from] Status),
+}
+
+#[derive(Debug, Error)]
+pub enum BundleRejectionError {
+    #[error("bundle lost state auction, auction: {0}, tip {1} lamports")]
+    StateAuctionBidRejected(String, u64),
+    #[error("bundle won state auction but failed global auction, auction {0}, tip {1} lamports")]
+    WinningBatchBidRejected(String, u64),
+    #[error("bundle simulation failure on tx {0}, message: {1:?}")]
+    SimulationFailure(String, Option<String>),
+    #[error("internal error {0}")]
+    InternalError(String),
 }
 
 pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;
@@ -51,7 +67,7 @@ pub async fn get_searcher_client(
     let auth_channel = create_grpc_channel(block_engine_url).await?;
     let client_interceptor = ClientInterceptor::new(
         AuthServiceClient::new(auth_channel),
-        &auth_keypair,
+        auth_keypair,
         Role::Searcher,
     )
     .await?;
@@ -70,91 +86,76 @@ pub async fn create_grpc_channel(url: &str) -> BlockEngineConnectionResult<Chann
     Ok(endpoint.connect().await?)
 }
 
-/// Builds and send bundle, attaching the tip and waiting until the next leader
-pub async fn build_and_send_bundle(
+pub async fn send_bundle_with_confirmation(
+    transactions: &[VersionedTransaction],
     rpc_client: &RpcClient,
-    bundle: Vec<VersionedTransaction>,
-    keypair_path: String,
-    tip_lamports: u64,
-    tip_account: String,
-    client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
-) {
-    let payer_keypair = read_keypair_file(keypair_path).expect("reads keypair at path");
-    let tip_account = Pubkey::from_str(&tip_account).expect("valid pubkey for tip account");
-    let balance = rpc_client
-        .get_balance(&payer_keypair.pubkey())
-        .await
-        .expect("reads balance");
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+    bundle_results_subscription: &mut Streaming<BundleResult>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bundle_signatures: Vec<Signature> =
+        transactions.iter().map(|tx| tx.signatures[0]).collect();
 
-    info!(
-        "payer public key: {:?} lamports: {:?}",
-        payer_keypair.pubkey(),
-        balance
-    );
-
-    let mut bundle_results_subscription = client
-        .subscribe_bundle_results(SubscribeBundleResultsRequest {})
-        .await
-        .expect("subscribe to bundle results")
-        .into_inner();
-
-    // wait for jito-solana leader slot
-    let mut is_leader_slot = false;
-    while !is_leader_slot {
-        let next_leader = client
-            .get_next_scheduled_leader(NextScheduledLeaderRequest {})
-            .await
-            .expect("gets next scheduled leader")
-            .into_inner();
-        let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
-        is_leader_slot = num_slots <= 2;
-        info!("next jito leader slot in {} slots", num_slots);
-        sleep(Duration::from_millis(500)).await;
-    }
-
-    // build + sign the transactions
-    let blockhash = rpc_client
-        .get_latest_blockhash()
-        .await
-        .expect("get blockhash");
-
-    let tip_tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-        &[transfer(
-            &payer_keypair.pubkey(),
-            &tip_account,
-            tip_lamports,
-        )],
-        Some(&payer_keypair.pubkey()),
-        &[&payer_keypair],
-        blockhash.clone(),
-    ));
-    let txs = [bundle, vec![tip_tx]].concat();
-
-    let signatures: Vec<Signature> = txs.iter().map(|tx| tx.signatures[0]).collect();
-
-    // convert them to packets + send over
-    let packets: Vec<_> = txs.iter().map(proto_packet_from_versioned_tx).collect();
-    let result = client
-        .send_bundle(SendBundleRequest {
-            bundle: Some(Bundle {
-                header: None,
-                packets,
-            }),
-        })
-        .await
-        .expect("sends bundle");
+    let result = send_bundle_no_wait(transactions, searcher_client).await?;
 
     // grab uuid from block engine + wait for results
     let uuid = result.into_inner().uuid;
-    info!("bundle sent uuid: {:?}", uuid);
-    info!("waiting for 5 seconds to hear results...");
-    while let Ok(Some(Ok(results))) =
-        timeout(Duration::from_secs(5), bundle_results_subscription.next()).await
+    info!("Bundle sent. UUID: {:?}", uuid);
+
+    info!("Waiting for 5 seconds to hear results...");
+    let mut time_left = 5000;
+    while let Ok(Some(Ok(results))) = timeout(
+        Duration::from_millis(time_left),
+        bundle_results_subscription.next(),
+    )
+    .await
     {
+        let instant = Instant::now();
         info!("bundle results: {:?}", results);
+        match results.result {
+            Some(BundleResultType::Accepted(Accepted {
+                slot: _s,
+                validator_identity: _v,
+            })) => {}
+            Some(BundleResultType::Rejected(rejected)) => {
+                match rejected.reason {
+                    Some(Reason::WinningBatchBidRejected(WinningBatchBidRejected {
+                        auction_id,
+                        simulated_bid_lamports,
+                        msg: _,
+                    })) => {
+                        return Err(Box::new(BundleRejectionError::WinningBatchBidRejected(
+                            auction_id,
+                            simulated_bid_lamports,
+                        )))
+                    }
+                    Some(Reason::StateAuctionBidRejected(StateAuctionBidRejected {
+                        auction_id,
+                        simulated_bid_lamports,
+                        msg: _,
+                    })) => {
+                        return Err(Box::new(BundleRejectionError::StateAuctionBidRejected(
+                            auction_id,
+                            simulated_bid_lamports,
+                        )))
+                    }
+                    Some(Reason::SimulationFailure(SimulationFailure { tx_signature, msg })) => {
+                        return Err(Box::new(BundleRejectionError::SimulationFailure(
+                            tx_signature,
+                            msg,
+                        )))
+                    }
+                    Some(Reason::InternalError(InternalError { msg })) => {
+                        return Err(Box::new(BundleRejectionError::InternalError(msg)))
+                    }
+                    _ => {}
+                };
+            }
+            _ => {}
+        }
+        time_left -= instant.elapsed().as_millis() as u64;
     }
 
-    let futs: Vec<_> = signatures
+    let futs: Vec<_> = bundle_signatures
         .iter()
         .map(|sig| {
             rpc_client.get_signature_status_with_commitment(sig, CommitmentConfig::processed())
@@ -162,11 +163,34 @@ pub async fn build_and_send_bundle(
         .collect();
     let results = futures::future::join_all(futs).await;
     if !results.iter().all(|r| matches!(r, Ok(Some(Ok(()))))) {
-        info!("transactions in bundle did not land :(");
-    } else {
-        info!("bundle landed successfully!!");
-        for sig in signatures {
-            info!("https://solscan.io/tx/{}", sig);
-        }
+        warn!("Transactions in bundle did not land");
+        return Err(Box::new(BundleRejectionError::InternalError(
+            "Searcher service did not provide bundle status in time".into(),
+        )));
     }
+    info!("Bundle landed successfully");
+    for sig in bundle_signatures.iter() {
+        info!("https://solscan.io/tx/{}", sig);
+    }
+    Ok(())
+}
+
+pub async fn send_bundle_no_wait(
+    transactions: &[VersionedTransaction],
+    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+) -> Result<Response<SendBundleResponse>, Status> {
+    // convert them to packets + send over
+    let packets: Vec<_> = transactions
+        .iter()
+        .map(proto_packet_from_versioned_tx)
+        .collect();
+
+    searcher_client
+        .send_bundle(SendBundleRequest {
+            bundle: Some(Bundle {
+                header: None,
+                packets,
+            }),
+        })
+        .await
 }
