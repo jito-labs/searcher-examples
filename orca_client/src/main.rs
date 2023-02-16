@@ -1,22 +1,26 @@
 mod orca;
 mod orca_utils;
 
-use std::{env, rc::Rc, sync::Arc};
+use std::{env, rc::Rc, str::FromStr, sync::Arc, time::Duration};
 
 use anchor_client::{Client as AnchorClient, Cluster};
 use clap::Parser;
 use env_logger::TimestampPrecision;
-use jito_protos::searcher::SubscribeBundleResultsRequest;
+use jito_protos::searcher::{NextScheduledLeaderRequest, SubscribeBundleResultsRequest};
 use jito_searcher_client::{get_searcher_client, send_bundle_with_confirmation};
+use log::info;
 use orca::swap;
 use solana_client::{nonblocking::rpc_client::RpcClient as AsyncRpcClient, rpc_client::RpcClient};
 use solana_client_helpers::Client as SolanaClient;
+use solana_program::pubkey::Pubkey;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     signature::{read_keypair_file, Signer},
+    system_instruction::transfer,
     transaction::{Transaction, VersionedTransaction},
 };
 use spl_memo::build_memo;
+use tokio::time::sleep;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
@@ -83,11 +87,17 @@ fn main() {
     let payer =
         read_keypair_file(args.keypair_path.clone()).expect("example requires a keypair file");
     // TODO: make these mutable so that we can pass in a more recent blockhash once jito is leader
+
+    let tip_account = Pubkey::from_str(&args.tip_account).expect("valid pubkey for tip account");
+
     let tx_0 = VersionedTransaction::from(Transaction::new_signed_with_payer(
-        &[build_memo(
-            format!("i b swimmin in da mempool 🏊🏊🏊🏊").as_bytes(),
-            &[],
-        )],
+        &[
+            build_memo(
+                format!("i b swimmin in da mempool 🏊🏊🏊🏊").as_bytes(),
+                &[],
+            ),
+            transfer(&payer.pubkey(), &tip_account, 10000),
+        ],
         Some(&payer_pubkey),
         &[&payer],
         blockhash.clone(),
@@ -106,13 +116,25 @@ fn main() {
             get_searcher_client(args.block_engine_url.as_str(), &auth_keypair)
                 .await
                 .unwrap();
-
+        // wait for jito-solana leader slot
+        let mut is_leader_slot = false;
+        while !is_leader_slot {
+            let next_leader = searcher_client
+                .get_next_scheduled_leader(NextScheduledLeaderRequest {})
+                .await
+                .expect("gets next scheduled leader")
+                .into_inner();
+            let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
+            is_leader_slot = num_slots <= 2;
+            info!("next jito leader slot in {num_slots} slots");
+            sleep(Duration::from_millis(500)).await;
+        }
         let mut bundle_results_subscription = searcher_client
             .subscribe_bundle_results(SubscribeBundleResultsRequest {})
             .await
             .expect("subscribe to bundle results")
             .into_inner();
-
+        info!("bundle resu");
         send_bundle_with_confirmation(
             &[tx_0, tx_1],
             &AsyncRpcClient::new(args.rpc_url.clone()),
@@ -121,5 +143,6 @@ fn main() {
         )
         .await
         .unwrap();
+        info!("done");
     });
 }

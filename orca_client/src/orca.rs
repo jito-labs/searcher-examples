@@ -5,6 +5,7 @@ use anchor_lang::{
     AccountDeserialize,
 };
 use anyhow::Result;
+use log::info;
 use solana_client_helpers::{
     spl_associated_token_account::get_associated_token_address, Client as SolanaClient,
 };
@@ -36,28 +37,28 @@ pub fn swap(
         .unwrap();
     let whirlpool = Whirlpool::try_deserialize(&mut whirlpool_data).unwrap();
 
-    println!(
+    info!(
         "whirlpool token_mint_a {}",
         whirlpool.token_mint_a.to_string()
     );
-    println!(
+    info!(
         "whirlpool token_mint_b {}",
         whirlpool.token_mint_b.to_string()
     );
-    println!(
+    info!(
         "whirlpool token_vault_a {}",
         whirlpool.token_vault_a.to_string()
     );
-    println!(
+    info!(
         "whirlpool token_vault_b {}",
         whirlpool.token_vault_b.to_string()
     );
-    println!("whirlpool tick_spacing {}", whirlpool.tick_spacing);
-    println!(
+    info!("whirlpool tick_spacing {}", whirlpool.tick_spacing);
+    info!(
         "whirlpool tick_current_index {}",
         whirlpool.tick_current_index
     );
-    println!("whirlpool sqrt_price {}", whirlpool.sqrt_price);
+    info!("whirlpool sqrt_price {}", whirlpool.sqrt_price);
 
     // get tickarray for swap
     let tick_arrays = poolutil_get_tick_array_pubkeys_for_swap(
@@ -74,9 +75,9 @@ pub fn swap(
     let ta1 = TickArray::try_deserialize(&mut ta1_data).unwrap();
     let ta2 = TickArray::try_deserialize(&mut ta2_data).unwrap();
 
-    println!("tick_arrays[0] {}", tick_arrays[0].to_string());
-    println!("tick_arrays[1] {}", tick_arrays[1].to_string());
-    println!("tick_arrays[2] {}", tick_arrays[2].to_string());
+    info!("tick_arrays[0] {}", tick_arrays[0].to_string());
+    info!("tick_arrays[1] {}", tick_arrays[1].to_string());
+    info!("tick_arrays[2] {}", tick_arrays[2].to_string());
 
     // get quote
     let [quote_amount_in, quote_amount_out] = get_swap_quote(
@@ -87,9 +88,9 @@ pub fn swap(
         a_to_b,
     );
     let amount_out = calc_slippage(quote_amount_out, 1, 100); // 1%
-    println!("quote amount_in {}", quote_amount_in);
-    println!("quote amount_out {}", quote_amount_out);
-    println!("amount_out (slippage included) {}", amount_out);
+    info!("quote amount_in {}", quote_amount_in);
+    info!("quote amount_out {}", quote_amount_out);
+    info!("amount_out (slippage included) {}", amount_out);
 
     // get oracle
     let oracle = pdautil_get_oracle(&ORCA_WHIRLPOOL_PROGRAM_ID, &SAMO_USDC_WHIRLPOOL_ADDRESS);
@@ -99,8 +100,8 @@ pub fn swap(
     // - If one token of pair is SOL, the WSOL account must be processed (avoid SOL in this example)
     let ata_a = get_associated_token_address(&payer_pubkey, &whirlpool.token_mint_a);
     let ata_b = get_associated_token_address(&payer_pubkey, &whirlpool.token_mint_b);
-    println!("ata_a {}", ata_a.to_string());
-    println!("ata_b {}", ata_b.to_string());
+    info!("ata_a {}", ata_a.to_string());
+    info!("ata_b {}", ata_b.to_string());
 
     // execute proxy_swap
     let instructions = program
