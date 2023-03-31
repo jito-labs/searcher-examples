@@ -21,7 +21,7 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
-  --keypair-path auth.json \
+  --auth-keypair-path auth.json \
   mempool-accounts --accounts H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG
 ```
 
@@ -29,7 +29,7 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
-  --keypair-path auth.json \
+  --auth-keypair-path auth.json \
   next-scheduled-leader
 ```
 
@@ -37,7 +37,7 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
-  --keypair-path auth.json \
+  --auth-keypair-path auth.json \
   connected-leaders
 ```
 
@@ -45,7 +45,7 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
-  --keypair-path auth.json \
+  --auth-keypair-path auth.json \
   tip-accounts
 ```
 
@@ -53,9 +53,9 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
-  --keypair-path auth.json \
+  --auth-keypair-path auth.json \
   send-bundle \
-  --payer payer.json \
+  --payer-keypair-path payer.json \
   --message "im testing jito bundles right now this is pretty sick bro" \
   --num-txs 5 \
   --lamports 100000 \

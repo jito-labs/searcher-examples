@@ -38,7 +38,7 @@ struct Args {
 
     /// Filepath to a keypair that's authenticated with the block engine
     #[arg(long, env)]
-    keypair_path: PathBuf,
+    auth_keypair_path: PathBuf,
 
     /// Subcommand to run
     #[command(subcommand)]
@@ -77,7 +77,7 @@ enum Commands {
         rpc_url: String,
         /// Filepath to keypair that can afford the transaction payments with 1 lamport tip
         #[arg(long)]
-        payer: String,
+        payer_keypair_path: PathBuf,
         /// Message you'd like the bundle to say
         #[arg(long)]
         message: String,
