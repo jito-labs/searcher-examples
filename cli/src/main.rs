@@ -119,7 +119,8 @@ async fn main() {
         .format_timestamp(Some(TimestampPrecision::Micros))
         .init();
 
-    let keypair = Arc::new(read_keypair_file(args.keypair_path).expect("reads keypair at path"));
+    let keypair =
+        Arc::new(read_keypair_file(args.auth_keypair_path).expect("reads keypair at path"));
 
     let mut client = get_searcher_client(&args.block_engine_url, &keypair)
         .await
@@ -223,13 +224,14 @@ async fn main() {
         }
         Commands::SendBundle {
             rpc_url,
-            payer,
+            payer_keypair_path,
             message,
             num_txs,
             lamports,
             tip_account,
         } => {
-            let payer_keypair = read_keypair_file(payer).expect("reads keypair at path");
+            let payer_keypair =
+                read_keypair_file(payer_keypair_path).expect("reads keypair at path");
             let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
             let balance = rpc_client
                 .get_balance(&payer_keypair.pubkey())
