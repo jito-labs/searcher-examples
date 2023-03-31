@@ -50,7 +50,7 @@ COPY --from=builder /home/root/app/${APP} ./
 ENTRYPOINT ["/app/jito-searcher-client"]
 
 
-FROM base_image as backrun
+FROM base_image as backrun_example
 ENV APP="jito-backrun-example"
 WORKDIR /app
 COPY --from=builder /home/root/app/${APP} ./

@@ -1,4 +1,5 @@
-use std::{env, str::FromStr, sync::Arc, time::Duration};
+use std::path::PathBuf;
+use std::{env, sync::Arc, time::Duration};
 
 use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
@@ -29,15 +30,15 @@ use tokio::time::{sleep, timeout};
 use tonic::{codegen::InterceptedService, transport::Channel, Streaming};
 
 #[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None)]
 struct Args {
     /// URL of the block engine
-    #[clap(long, env)]
+    #[arg(long, env)]
     block_engine_url: String,
 
     /// Filepath to a keypair that's authenticated with the block engine
-    #[clap(long, env)]
-    keypair_path: String,
+    #[arg(long, env)]
+    keypair_path: PathBuf,
 
     /// Subcommand to run
     #[command(subcommand)]
@@ -48,14 +49,14 @@ struct Args {
 enum Commands {
     /// Subscribe to mempool accounts
     MempoolAccounts {
-        /// A space-separated list of accounts to subscribe to
-        #[clap(required = true)]
+        /// A comma-separated list of accounts to subscribe to
+        #[arg(long, value_delimiter = ',', required = true)]
         accounts: Vec<String>,
     },
     /// Subscribe to mempool by program IDs
     MempoolPrograms {
-        /// A space-separated list of programs to subscribe to
-        #[clap(required = true)]
+        /// A comma-separated list of programs to subscribe to
+        #[arg(long, value_delimiter = ',', required = true)]
         programs: Vec<String>,
     },
     /// Print out information on the next scheduled leader
@@ -64,7 +65,7 @@ enum Commands {
     ConnectedLeaders,
     /// Prints out connected leaders with their leader slot percentage
     ConnectedLeadersInfo {
-        #[clap(long, required = true)]
+        #[arg(long)]
         rpc_url: String,
     },
     /// Prints out information on the tip accounts
@@ -72,23 +73,23 @@ enum Commands {
     /// Sends a 1 lamport bundle
     SendBundle {
         /// RPC URL
-        #[clap(long, required = true)]
+        #[arg(long)]
         rpc_url: String,
         /// Filepath to keypair that can afford the transaction payments with 1 lamport tip
-        #[clap(long, required = true)]
+        #[arg(long)]
         payer: String,
         /// Message you'd like the bundle to say
-        #[clap(long, required = true)]
+        #[arg(long)]
         message: String,
         /// Number of transactions in the bundle (must be <= 5)
-        #[clap(long, required = true)]
+        #[arg(long)]
         num_txs: usize,
         /// Amount of lamports to tip in each transaction
-        #[clap(long, required = true)]
+        #[arg(long)]
         lamports: u64,
         /// One of the tip accounts
-        #[clap(long, required = true)]
-        tip_account: String,
+        #[arg(long)]
+        tip_account: Pubkey,
     },
 }
 
@@ -110,7 +111,7 @@ async fn print_next_leader_info(
 #[tokio::main]
 async fn main() {
     let args: Args = Args::parse();
-
+    dbg!(&args);
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info")
     }
@@ -229,7 +230,6 @@ async fn main() {
             tip_account,
         } => {
             let payer_keypair = read_keypair_file(payer).expect("reads keypair at path");
-            let tip_account = Pubkey::from_str(&tip_account).expect("valid pubkey for tip account");
             let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
             let balance = rpc_client
                 .get_balance(&payer_keypair.pubkey())
