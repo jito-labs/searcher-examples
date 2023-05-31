@@ -22,7 +22,7 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
-  mempool-accounts H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG
+  mempool-accounts --accounts H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG
 ```
 
 ### Printing out the next scheduled leader
