@@ -48,15 +48,15 @@ struct Args {
 enum Commands {
     /// Subscribe to mempool accounts
     MempoolAccounts {
-        /// A space-separated list of accounts to subscribe to
-        #[clap(required = true)]
-        accounts: Vec<String>,
+        /// A comma-separated list of accounts to subscribe to
+        #[arg(long, value_delimiter = ',', required = true)]
+        accounts: Vec<Pubkey>,
     },
     /// Subscribe to mempool by program IDs
     MempoolPrograms {
-        /// A space-separated list of programs to subscribe to
-        #[clap(required = true)]
-        programs: Vec<String>,
+        /// A comma-separated list of programs to subscribe to
+        #[arg(long, value_delimiter = ',', required = true)]
+        programs: Vec<Pubkey>,
     },
     /// Print out information on the next scheduled leader
     NextScheduledLeader,
@@ -188,14 +188,16 @@ async fn main() {
             info!("{:?}", tip_accounts);
         }
         Commands::MempoolAccounts { accounts } => {
-            info!(
-                "waiting for mempool transactions that write-locks accounts: {:?}",
-                accounts
-            );
+            info!("waiting for mempool transactions that write-locks accounts: {accounts:?}");
             let pending_transactions = client
                 .subscribe_mempool(MempoolSubscription {
                     msg: Some(mempool_subscription::Msg::WlaV0Sub(
-                        WriteLockedAccountSubscriptionV0 { accounts },
+                        WriteLockedAccountSubscriptionV0 {
+                            accounts: accounts
+                                .into_iter()
+                                .map(|a| a.to_string())
+                                .collect::<Vec<String>>(),
+                        },
                     )),
                 })
                 .await
@@ -210,7 +212,12 @@ async fn main() {
             let pending_transactions = client
                 .subscribe_mempool(MempoolSubscription {
                     msg: Some(mempool_subscription::Msg::ProgramV0Sub(
-                        ProgramSubscriptionV0 { programs },
+                        ProgramSubscriptionV0 {
+                            programs: programs
+                                .into_iter()
+                                .map(|p| p.to_string())
+                                .collect::<Vec<String>>(),
+                        },
                     )),
                 })
                 .await
