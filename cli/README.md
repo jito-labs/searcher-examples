@@ -16,40 +16,61 @@ cargo b --release --bin jito-searcher-cli
 
 ## Running
 
-### Listening to mempool
-Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG):
+### Subscribe to mempool transactions
+Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6AR...QJEG):
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   mempool-accounts --accounts H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG
 ```
+Example output:
+```bash
+waiting for mempool transactions that write-locks accounts: ["H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG"]
+tx sig: 2hMtL3ymMLxmzm8gjJkM1hB8524HS9hc79uksfEZNqshnutoZ249Hhe5eZtj8BrwgFKHRsXfnSgE2AkkLM3bhHjg
+```
 
-### Printing out the next scheduled leader
+### Get the next scheduled leader
+Returns the pubkey of the next scheduled leader.
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   next-scheduled-leader
 ```
+Example output:
+```bash
+NextScheduledLeaderResponse { current_slot: 197084695, next_leader_slot: 197084788, next_leader_identity: "5pPRHniefFjkiaArbGX3Y8NUysJmQ9tMZg3FrFGwHzSm" }
+```
 
 ### Getting the connected leaders
+Returns the [validators](https://jito-foundation.gitbook.io/mev/solana-mev/systems#jito-solana) connected to Block Engine as map of Pubkey to scheduled leader slots.
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   connected-leaders
 ```
+Example output:
+```bash
+ConnectedLeadersResponse { connected_validators: {"CquA9q57TYVr9uvXvk6aqAG5GGKk3mUL9C8ALyAsUeWg": SlotList { slots: [196992512, 196992513, <snipped>] } } }
+```
 
-### Getting tip accounts
+### Get tip payment accounts
+Returns the current [tip payment accounts](https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses) that are in use. 
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   tip-accounts
 ```
+Example output:
+```bash
+GetTipAccountsResponse { accounts: ["DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL", <snipped>] }
+```
 
-### Sending a bundle
+### Send a bundle
+Sends a [bundle](https://jito-labs.gitbook.io/mev/searcher-resources/bundles) to Block Engine to be included in next leader slot.
 ```bash
 ./target/release/jito-searcher-cli \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
@@ -61,4 +82,17 @@ Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6Ar...QJEG
   --lamports 100000 \
   --tip-account 96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5 \
   --rpc-url "https://mainnet.rpc.jito.wtf/?access-token=<token here>"
+```
+Example output:
+```bash
+Bundle sent. UUID: "f193340e2cd4a5994f8c845d6cdbdd49c508d3f3958a20462aa3f54fb9376e6b"
+Waiting for 5 seconds to hear results...
+bundle results: BundleResult { bundle_id: "f193340e2cd4a5994f8c845d6cdbdd49c508d3f3958a20462aa3f54fb9376e6b", result: Some(Accepted(Accepted { slot: 197085505, validator_identity: "AaapDdocMdZQaMAF1gXqKX2ixd7YYSxTpKHMcsbcF318" })) }
+bundle results: BundleResult { bundle_id: "f193340e2cd4a5994f8c845d6cdbdd49c508d3f3958a20462aa3f54fb9376e6b", result: Some(Accepted(Accepted { slot: 197085507, validator_identity: "AaapDdocMdZQaMAF1gXqKX2ixd7YYSxTpKHMcsbcF318" })) }
+Bundle landed successfully
+https://solscan.io/tx/5gN8AznZosVvt7oc5hmFqUg6LxygPLjix9fP6Q5ANLy1hiHAqMWeXva68Z4j1XDMBNJZ8n9bQppsCUGAabT73dcY
+https://solscan.io/tx/2KqpS57XCPPBDSU2mCWttYpJ8Mp74bXRoLwJ9Cb6Xb6BC6Vtgqjz8o9RDqEXF2t2jNEzrDQqU8pzXDg58zfz9s8T
+https://solscan.io/tx/dBy3yu7pAv3J17BvR9gjgvEawh4Vu1QWqA7dkgL69QtjQABo2ru4zmqr9KqRSi4iBbCsu92oygGxpF3btLW8tBJ
+https://solscan.io/tx/2ioZ6sSE1RWkrVaqNZErfLBnFbu46ZcaTUgJUvXWToBVdiNG9owbgrBTxEWiCUki6PFrnnENJ8SukQbQLNpUUjqr
+https://solscan.io/tx/2E1HoQuZYLoVP2Z3Ct25JQpEJeK7Kphbx6m3mPxBRHEJG9dZ2uUHWVbtccSjDv75t5uJZ5K7182ZrmtMF4PR2yPC
 ```
