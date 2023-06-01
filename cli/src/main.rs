@@ -188,15 +188,16 @@ async fn main() {
             info!("{:?}", tip_accounts);
         }
         Commands::MempoolAccounts { accounts } => {
-            let accounts = accounts
-                .into_iter()
-                .map(|a| a.to_string())
-                .collect::<Vec<String>>();
             info!("waiting for mempool transactions that write-locks accounts: {accounts:?}");
             let pending_transactions = client
                 .subscribe_mempool(MempoolSubscription {
                     msg: Some(mempool_subscription::Msg::WlaV0Sub(
-                        WriteLockedAccountSubscriptionV0 { accounts },
+                        WriteLockedAccountSubscriptionV0 {
+                            accounts: accounts
+                                .into_iter()
+                                .map(|a| a.to_string())
+                                .collect::<Vec<String>>(),
+                        },
                     )),
                 })
                 .await
@@ -207,15 +208,16 @@ async fn main() {
             print_packet_stream(&mut client, pending_transactions).await;
         }
         Commands::MempoolPrograms { programs } => {
-            let programs = programs
-                .into_iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<String>>();
             info!("waiting for mempool transactions that mention programs: {programs:?}");
             let pending_transactions = client
                 .subscribe_mempool(MempoolSubscription {
                     msg: Some(mempool_subscription::Msg::ProgramV0Sub(
-                        ProgramSubscriptionV0 { programs },
+                        ProgramSubscriptionV0 {
+                            programs: programs
+                                .into_iter()
+                                .map(|p| p.to_string())
+                                .collect::<Vec<String>>(),
+                        },
                     )),
                 })
                 .await
