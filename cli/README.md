@@ -30,6 +30,20 @@ waiting for mempool transactions that write-locks accounts: ["H6ARHf6YXhGYeQfUzQ
 tx sig: 2hMtL3ymMLxmzm8gjJkM1hB8524HS9hc79uksfEZNqshnutoZ249Hhe5eZtj8BrwgFKHRsXfnSgE2AkkLM3bhHjg
 ```
 
+### Subscribe to transactions mentioning a program id
+Subscribe to mempool transaction that mentions SPL Staking program (Stake11..111)
+```bash
+./target/release/jito-searcher-cli \
+  --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
+  --keypair-path auth.json \
+  mempool-programs --programs Stake11111111111111111111111111111111111111
+```
+Example output:
+```bash
+waiting for mempool transactions that mention programs: [Stake11111111111111111111111111111111111111]
+tx sig: Szk1fVLLkZwzQ5qbCY2nXQ3y8aiFPrGZvAeHMqNN12ArF8NxNF1H4autgd6BFgaVcw5BDL7jGYcW9TYgHcKuifE
+```
+
 ### Get the next scheduled leader
 Returns the pubkey of the next scheduled leader.
 ```bash
@@ -43,7 +57,7 @@ Example output:
 NextScheduledLeaderResponse { current_slot: 197084695, next_leader_slot: 197084788, next_leader_identity: "5pPRHniefFjkiaArbGX3Y8NUysJmQ9tMZg3FrFGwHzSm" }
 ```
 
-### Getting the connected leaders
+### Get connected leaders
 Returns the [validators](https://jito-foundation.gitbook.io/mev/solana-mev/systems#jito-solana) connected to Block Engine as map of Pubkey to scheduled leader slots.
 ```bash
 ./target/release/jito-searcher-cli \
