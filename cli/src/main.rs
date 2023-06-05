@@ -176,7 +176,7 @@ async fn main() {
             }
             info!(
                 "total stake for block engine: {:.2}%",
-                total_activated_connected_stake as f64 * 100f64 / total_activated_stake as f64
+                (total_activated_connected_stake * 100) as f64 / total_activated_stake as f64
             );
         }
         Commands::TipAccounts => {
