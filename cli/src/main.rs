@@ -202,7 +202,7 @@ async fn main() {
                                 .collect::<Vec<String>>(),
                         },
                     )),
-                    regions: vec!["ny".to_string()], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
+                    regions: vec![], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
                 })
                 .await
                 .expect("subscribes to pending transactions by write-locked accounts")
@@ -223,7 +223,7 @@ async fn main() {
                                 .collect::<Vec<String>>(),
                         },
                     )),
-                    regions: vec!["ny".to_string()], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
+                    regions: vec![], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
                 })
                 .await
                 .expect("subscribes to pending transactions by program id")
