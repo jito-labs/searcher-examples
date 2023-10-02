@@ -164,7 +164,10 @@ async fn main() {
 
             let mut total_activated_connected_stake = 0;
             for rpc_vote_account_info in rpc_vote_account_status.current {
-                if let Some(_) = connected_validators.get(&rpc_vote_account_info.node_pubkey) {
+                if connected_validators
+                    .get(&rpc_vote_account_info.node_pubkey)
+                    .is_some()
+                {
                     total_activated_connected_stake += rpc_vote_account_info.activated_stake;
                     info!(
                         "connected_leader: {}, stake: {:.2}%",
@@ -199,6 +202,7 @@ async fn main() {
                                 .collect::<Vec<String>>(),
                         },
                     )),
+                    regions: vec!["ny".to_string()], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
                 })
                 .await
                 .expect("subscribes to pending transactions by write-locked accounts")
@@ -219,6 +223,7 @@ async fn main() {
                                 .collect::<Vec<String>>(),
                         },
                     )),
+                    regions: vec!["ny".to_string()], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
                 })
                 .await
                 .expect("subscribes to pending transactions by program id")

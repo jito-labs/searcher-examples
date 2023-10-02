@@ -121,7 +121,7 @@ struct BundledTransactions {
 struct BlockStats {
     bundles_sent: Vec<(
         BundledTransactions,
-        result::Result<Response<SendBundleResponse>, Status>,
+        tonic::Result<Response<SendBundleResponse>>,
     )>,
     send_elapsed: u64,
     send_rt_per_packet: Histogram,
@@ -155,7 +155,7 @@ fn build_bundles(
                 ],
                 Some(&keypair.pubkey()),
                 &[keypair],
-                blockhash.clone(),
+                *blockhash,
             ));
             Some(BundledTransactions {
                 mempool_txs: vec![mempool_tx],
@@ -189,14 +189,14 @@ async fn send_bundles(
 }
 
 fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
-    let tip_pda_0 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_0"], &tip_program_pubkey).0;
-    let tip_pda_1 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_1"], &tip_program_pubkey).0;
-    let tip_pda_2 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_2"], &tip_program_pubkey).0;
-    let tip_pda_3 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_3"], &tip_program_pubkey).0;
-    let tip_pda_4 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_4"], &tip_program_pubkey).0;
-    let tip_pda_5 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_5"], &tip_program_pubkey).0;
-    let tip_pda_6 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_6"], &tip_program_pubkey).0;
-    let tip_pda_7 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_7"], &tip_program_pubkey).0;
+    let tip_pda_0 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_0"], tip_program_pubkey).0;
+    let tip_pda_1 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_1"], tip_program_pubkey).0;
+    let tip_pda_2 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_2"], tip_program_pubkey).0;
+    let tip_pda_3 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_3"], tip_program_pubkey).0;
+    let tip_pda_4 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_4"], tip_program_pubkey).0;
+    let tip_pda_5 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_5"], tip_program_pubkey).0;
+    let tip_pda_6 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_6"], tip_program_pubkey).0;
+    let tip_pda_7 = Pubkey::find_program_address(&[b"TIP_ACCOUNT_7"], tip_program_pubkey).0;
 
     vec![
         tip_pda_0, tip_pda_1, tip_pda_2, tip_pda_3, tip_pda_4, tip_pda_5, tip_pda_6, tip_pda_7,
@@ -311,7 +311,7 @@ fn print_block_stats(
         if let Some(sigs) = &b.signatures {
             let block_signatures: HashSet<Signature> = sigs
                 .iter()
-                .map(|s| Signature::from_str(&s).unwrap())
+                .map(|s| Signature::from_str(s).unwrap())
                 .collect();
 
             // bundles that were sent before or during this slot
@@ -319,7 +319,7 @@ fn print_block_stats(
                 &Slot,
                 &Vec<(
                     BundledTransactions,
-                    result::Result<Response<SendBundleResponse>, Status>,
+                    tonic::Result<Response<SendBundleResponse>>,
                 )>,
             > = block_stats
                 .iter()
@@ -330,14 +330,14 @@ fn print_block_stats(
             if let Some(leader) = maybe_leader {
                 // number of bundles sent before or during this slot
                 let num_bundles_sent: usize = bundles_sent_before_slot
-                    .iter()
-                    .map(|(_, bundles_sent)| bundles_sent.len())
+                    .values()
+                    .map(|bundles_sent| bundles_sent.len())
                     .sum();
 
                 // number of bundles where sending returned ok
                 let num_bundles_sent_ok: usize = bundles_sent_before_slot
-                    .iter()
-                    .map(|(_, bundles_sent)| {
+                    .values()
+                    .map(|bundles_sent| {
                         bundles_sent
                             .iter()
                             .filter(|(_, send_response)| send_response.is_ok())
@@ -440,8 +440,8 @@ fn print_block_stats(
             } else {
                 // figure out how many transactions in bundles landed in slots other than our leader
                 let num_mempool_txs_landed: usize = bundles_sent_before_slot
-                    .iter()
-                    .map(|(_, bundles)| {
+                    .values()
+                    .map(|bundles| {
                         bundles
                             .iter()
                             .filter(|(bundle, _)| {
@@ -528,7 +528,7 @@ async fn run_searcher_loop(
                 // it might be ideal to wait until the leader slot is up
                 if is_leader_slot {
                     let pending_tx_notification = maybe_pending_tx_notification.ok_or(BackrunError::Shutdown)?;
-                    let bundles = build_bundles(pending_tx_notification, &keypair, &blockhash, &tip_accounts, &mut rng, &message);
+                    let bundles = build_bundles(pending_tx_notification, keypair, &blockhash, &tip_accounts, &mut rng, &message);
                     if !bundles.is_empty() {
                         let now = Instant::now();
                         let results = send_bundles(&mut searcher_client, &bundles).await?;
@@ -537,7 +537,7 @@ async fn run_searcher_loop(
 
                         match block_stats.entry(highest_slot) {
                             Entry::Occupied(mut entry) => {
-                                let mut stats = entry.get_mut();
+                                let stats = entry.get_mut();
                                 stats.bundles_sent.extend(bundles.into_iter().zip(results.into_iter()));
                                 stats.send_elapsed += send_elapsed;
                                 let _ = stats.send_rt_per_packet.increment(send_rt_pp_us);
@@ -547,7 +547,7 @@ async fn run_searcher_loop(
                                 let _ = send_rt_per_packet.increment(send_rt_pp_us);
                                 entry.insert(BlockStats {
                                     bundles_sent: bundles.into_iter().zip(results.into_iter()).collect(),
-                                    send_elapsed: send_elapsed,
+                                    send_elapsed,
                                     send_rt_per_packet
                                 });
                             }

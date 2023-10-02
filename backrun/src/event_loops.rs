@@ -39,18 +39,12 @@ pub async fn slot_subscribe_loop(pubsub_addr: String, slot_sender: Sender<Slot>)
             Ok(pubsub_client) => match pubsub_client.slot_updates_subscribe().await {
                 Ok((mut slot_update_subscription, _unsubscribe_fn)) => {
                     while let Some(slot_update) = slot_update_subscription.next().await {
-                        match slot_update {
-                            SlotUpdate::FirstShredReceived { slot, timestamp: _ } => {
-                                datapoint_info!("slot_subscribe_slot", ("slot", slot, i64));
-                                if slot_sender.send(slot).await.is_err() {
-                                    datapoint_error!(
-                                        "slot_subscribe_send_error",
-                                        ("errors", 1, i64)
-                                    );
-                                    return;
-                                }
+                        if let SlotUpdate::FirstShredReceived { slot, timestamp: _ } = slot_update {
+                            datapoint_info!("slot_subscribe_slot", ("slot", slot, i64));
+                            if slot_sender.send(slot).await.is_err() {
+                                datapoint_error!("slot_subscribe_send_error", ("errors", 1, i64));
+                                return;
                             }
-                            _ => {}
                         }
                     }
                     slot_subscribe_disconnect_errors += 1;
