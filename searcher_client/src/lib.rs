@@ -121,7 +121,7 @@ pub async fn send_bundle_with_confirmation(
                     Some(Reason::WinningBatchBidRejected(WinningBatchBidRejected {
                         auction_id,
                         simulated_bid_lamports,
-                        msg: _
+                        msg: _,
                     })) => {
                         return Err(Box::new(BundleRejectionError::WinningBatchBidRejected(
                             auction_id,
@@ -131,7 +131,7 @@ pub async fn send_bundle_with_confirmation(
                     Some(Reason::StateAuctionBidRejected(StateAuctionBidRejected {
                         auction_id,
                         simulated_bid_lamports,
-                        msg: _
+                        msg: _,
                     })) => {
                         return Err(Box::new(BundleRejectionError::StateAuctionBidRejected(
                             auction_id,
