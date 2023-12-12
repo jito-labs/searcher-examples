@@ -4,7 +4,8 @@ use futures_util::StreamExt;
 use jito_protos::{
     bundle::BundleResult,
     searcher::{
-        PendingTxNotification, PendingTxSubscriptionRequest, SubscribeBundleResultsRequest,
+        mempool_subscription, MempoolSubscription, PendingTxNotification,
+        SubscribeBundleResultsRequest, WriteLockedAccountSubscriptionV0,
     },
 };
 use jito_searcher_client::get_searcher_client;
@@ -162,8 +163,13 @@ pub async fn pending_tx_loop(
         match get_searcher_client(&block_engine_addr, &auth_keypair).await {
             Ok(mut searcher_client) => {
                 match searcher_client
-                    .subscribe_pending_transactions(PendingTxSubscriptionRequest {
-                        accounts: backrun_pubkeys.iter().map(|p| p.to_string()).collect(),
+                    .subscribe_mempool(MempoolSubscription {
+                        regions: vec![],
+                        msg: Some(mempool_subscription::Msg::WlaV0Sub(
+                            WriteLockedAccountSubscriptionV0 {
+                                accounts: backrun_pubkeys.iter().map(|pk| pk.to_string()).collect(),
+                            },
+                        )),
                     })
                     .await
                 {
