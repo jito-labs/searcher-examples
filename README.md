@@ -2,14 +2,17 @@
 This repository contains a few examples on how to use a searcher.
 
 ## Setup
-- You may have to install protoc to compile protobufs.
-- Ensure that rust is installed:
+1. Install protoc to compile protobufs
+- Follow instructions at: https://grpc.io/docs/protoc-installation/#install-pre-compiled-binaries-any-os
+2. Ensure that the rust toolchain is installed
 ```bash
 $ curl https://sh.rustup.rs -sSf | sh
 $ source $HOME/.cargo/env
-$ git clone https://github.com/jito-labs/searcher-examples.git
+```
+3. Clone the repo
+```bash
+$ git clone https://github.com/jito-labs/searcher-examples.git --recurse-submodules
 $ cd searcher-examples
-$ git submodule update --init --recursive
 ```
 
 ## Infrastructure
