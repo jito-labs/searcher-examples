@@ -315,16 +315,17 @@ fn print_block_stats(
                 .collect();
 
             // bundles that were sent before or during this slot
+            #[allow(clippy::type_complexity)]
             let bundles_sent_before_slot: HashMap<
-                &Slot,
-                &Vec<(
+                Slot,
+                &[(
                     BundledTransactions,
                     tonic::Result<Response<SendBundleResponse>>,
-                )>,
+                )],
             > = block_stats
                 .iter()
                 .filter(|(slot, _)| **slot <= block.context.slot)
-                .map(|(slot, stats)| (slot, stats.bundles_sent.as_ref()))
+                .map(|(slot, stats)| (*slot, stats.bundles_sent.as_ref()))
                 .collect();
 
             if let Some(leader) = maybe_leader {
@@ -346,7 +347,7 @@ fn print_block_stats(
                     .sum();
 
                 // a list of all bundles landed this slot that were sent before or during this slot
-                let bundles_landed: Vec<(&Slot, &BundledTransactions)> = bundles_sent_before_slot
+                let bundles_landed: Vec<(Slot, &BundledTransactions)> = bundles_sent_before_slot
                     .iter()
                     .flat_map(|(slot, bundles_sent_slot)| {
                         bundles_sent_slot
@@ -367,7 +368,7 @@ fn print_block_stats(
                     })
                     .collect();
 
-                let mempool_txs_landed_no_bundle: Vec<(&Slot, &BundledTransactions)> =
+                let mempool_txs_landed_no_bundle: Vec<(Slot, &BundledTransactions)> =
                     bundles_sent_before_slot
                         .iter()
                         .flat_map(|(slot, bundles_sent_slot)| {
@@ -395,12 +396,12 @@ fn print_block_stats(
                 // find the min and max distance from when the bundle was sent to what block it landed in
                 let min_bundle_send_slot = bundles_landed
                     .iter()
-                    .map(|(slot, _)| **slot)
+                    .map(|(slot, _)| *slot)
                     .min()
                     .unwrap_or(0);
                 let max_bundle_send_slot = bundles_landed
                     .iter()
-                    .map(|(slot, _)| **slot)
+                    .map(|(slot, _)| *slot)
                     .max()
                     .unwrap_or(0);
 
@@ -479,6 +480,7 @@ fn print_block_stats(
     block_signatures.retain(|slot, _| *slot > block.context.slot - KEEP_SIGS_SLOTS);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_searcher_loop(
     block_engine_addr: String,
     auth_keypair: Arc<Keypair>,
