@@ -7,7 +7,7 @@ use jito_protos::{
     convert::versioned_tx_from_packet,
     searcher::{
         mempool_subscription, searcher_service_client::SearcherServiceClient,
-        ConnectedLeadersRequest, GetTipAccountsRequest, MempoolSubscription,
+        ConnectedLeadersRegionedRequest, GetTipAccountsRequest, MempoolSubscription,
         NextScheduledLeaderRequest, PendingTxNotification, ProgramSubscriptionV0,
         SubscribeBundleResultsRequest, WriteLockedAccountSubscriptionV0,
     },
@@ -135,7 +135,14 @@ async fn main() {
         }
         Commands::ConnectedLeaders => {
             let connected_leaders = client
-                .get_connected_leaders(ConnectedLeadersRequest {})
+                .get_connected_leaders_regioned(ConnectedLeadersRegionedRequest {
+                    regions: vec![
+                        // "amsterdam".to_string(),
+                        // "frankfurt".to_string(),
+                        // "ny".to_string(),
+                        // "tokyo".to_string(),
+                    ], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
+                })
                 .await
                 .expect("gets connected leaders")
                 .into_inner();
@@ -143,7 +150,7 @@ async fn main() {
         }
         Commands::ConnectedLeadersInfo { rpc_url } => {
             let connected_leaders_response = client
-                .get_connected_leaders(ConnectedLeadersRequest {})
+                .get_connected_leaders_regioned(ConnectedLeadersRegionedRequest { regions: vec![] })
                 .await
                 .expect("gets connected leaders")
                 .into_inner();
@@ -172,7 +179,7 @@ async fn main() {
                     info!(
                         "connected_leader: {}, stake: {:.2}%",
                         rpc_vote_account_info.node_pubkey,
-                        rpc_vote_account_info.activated_stake as f64 * 100f64
+                        (rpc_vote_account_info.activated_stake * 100) as f64
                             / total_activated_stake as f64
                     );
                 }
@@ -202,7 +209,12 @@ async fn main() {
                                 .collect::<Vec<String>>(),
                         },
                     )),
-                    regions: vec![], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
+                    regions: vec![
+                        // "amsterdam".to_string(),
+                        // "frankfurt".to_string(),
+                        // "ny".to_string(),
+                        // "tokyo".to_string(),
+                    ], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
                 })
                 .await
                 .expect("subscribes to pending transactions by write-locked accounts")
