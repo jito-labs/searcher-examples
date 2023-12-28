@@ -19,13 +19,13 @@ $ cd searcher-examples
 You will need access to a few things before running these examples.
 
 ### Local keypair
-This is a locally generated wallet which you will use to sign transactions. Our block-engine is API-gated, checking to make sure your keypair is present, so make sure the keypair you sign transactions with has the same as the pubkey you put into our systems when generating the block engine API key
+This is a locally generated wallet which you will use to sign transactions and pay for transaction fees and tips with.
 
 ### Block Engine URLs
 A list of our block engine URLs can be found here: https://jito-labs.gitbook.io/mev/systems/connecting/mainnet
 
 ### Block Engine API Key
-Our block engine is currently API-gated, but we can generate API keys. Please email support@jito.wtf or create a ticket in our discord asking for an API key.
+Please apply for block engine API keys here: https://web.miniextensions.com/WV3gZjFwqNqITsMufIEp
 
 ### On-chain addresses
 On-chain addresses for tip programs and tip accounts can be found here: https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses
