@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-use std::{env, sync::Arc, time::Duration};
+use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
@@ -135,7 +134,7 @@ async fn main() {
         .format_timestamp(Some(TimestampPrecision::Micros))
         .init();
 
-    let keypair = Arc::new(read_keypair_file(args.keypair_path).expect("reads keypair at path"));
+    let keypair = Arc::new(read_keypair_file(&args.keypair_path).expect("reads keypair at path"));
     let mut client = get_searcher_client(&args.block_engine_url, &keypair)
         .await
         .expect("connects to searcher client");
@@ -151,8 +150,9 @@ async fn main() {
                 .into_inner();
             info!("{next_leader:?}");
             info!(
-                "Next leader in {} slots.",
-                next_leader.next_leader_slot - next_leader.current_slot
+                "Next leader in {} slots in {}.",
+                next_leader.next_leader_slot - next_leader.current_slot,
+                next_leader.next_leader_region
             );
         }
         Commands::ConnectedLeaders => {
@@ -266,7 +266,7 @@ async fn main() {
             lamports,
             tip_account,
         } => {
-            let payer_keypair = read_keypair_file(payer).expect("reads keypair at path");
+            let payer_keypair = read_keypair_file(&payer).expect("reads keypair at path");
             let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
             let balance = rpc_client
                 .get_balance(&payer_keypair.pubkey())
@@ -274,9 +274,8 @@ async fn main() {
                 .expect("reads balance");
 
             info!(
-                "payer public key: {:?} lamports: {:?}",
+                "payer public key: {:?} lamports: {balance:?}",
                 payer_keypair.pubkey(),
-                balance
             );
 
             let mut bundle_results_subscription = client
@@ -297,7 +296,10 @@ async fn main() {
                     .into_inner();
                 let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
                 is_leader_slot = num_slots <= 2;
-                info!("next jito leader slot in {num_slots} slots");
+                info!(
+                    "next jito leader slot in {num_slots} slots in {}",
+                    next_leader.next_leader_region
+                );
                 sleep(Duration::from_millis(500)).await;
             }
 

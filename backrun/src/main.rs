@@ -1,9 +1,8 @@
 mod event_loops;
 
-use std::path::PathBuf;
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
-    path::Path,
+    path::PathBuf,
     result,
     str::FromStr,
     sync::Arc,
@@ -250,9 +249,10 @@ async fn maintenance_tick(
         .await?
         .into_inner();
     info!(
-        "next_scheduled_leader: {} in {} slots",
+        "next_scheduled_leader: {} in {} slots from {}",
         next_scheduled_leader.next_leader_identity,
-        next_scheduled_leader.next_leader_slot - next_scheduled_leader.current_slot
+        next_scheduled_leader.next_leader_slot - next_scheduled_leader.current_slot,
+        next_scheduled_leader.next_leader_region
     );
 
     Ok(())
@@ -588,10 +588,8 @@ fn main() -> Result<()> {
         .init();
     let args: Args = Args::parse();
 
-    let payer_keypair =
-        Arc::new(read_keypair_file(Path::new(&args.payer_keypair)).expect("parse kp file"));
-    let auth_keypair =
-        Arc::new(read_keypair_file(Path::new(&args.auth_keypair)).expect("parse kp file"));
+    let payer_keypair = Arc::new(read_keypair_file(&args.payer_keypair).expect("parse kp file"));
+    let auth_keypair = Arc::new(read_keypair_file(&args.auth_keypair).expect("parse kp file"));
 
     set_host_id(auth_keypair.pubkey().to_string());
 
