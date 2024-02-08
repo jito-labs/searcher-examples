@@ -36,7 +36,7 @@ struct Args {
     #[arg(long, env)]
     block_engine_url: String,
 
-    /// Filepath to a keypair that's authenticated with the block engine,
+    /// Path to keypair file used to authenticate with the Jito Block Engine
     /// See: https://jito-labs.gitbook.io/mev/searcher-resources/getting-started#block-engine-api-key
     #[arg(long, env)]
     keypair_path: PathBuf,

@@ -71,7 +71,8 @@ struct Args {
     #[clap(long, env)]
     payer_keypair: PathBuf,
 
-    /// Path to keypair file used to authenticate with the backend
+    /// Path to keypair file used to authenticate with the Jito Block Engine
+    /// See: https://jito-labs.gitbook.io/mev/searcher-resources/getting-started#block-engine-api-key
     #[clap(long, env)]
     auth_keypair: PathBuf,
 
@@ -85,11 +86,12 @@ struct Args {
     #[clap(long, env)]
     rpc_url: String,
 
-    /// Memo program message
+    /// Message to pass into the memo program, to be included in the bundle.
     #[clap(long, env, default_value_t = String::from("jito backrun"))]
-    canary_txn_message: String,
+    message: String,
 
     /// Tip program public key
+    /// See: https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses
     #[clap(long, env)]
     tip_program_id: Pubkey,
 
@@ -623,7 +625,7 @@ fn main() -> Result<()> {
             &payer_keypair,
             args.rpc_url,
             args.regions,
-            args.canary_txn_message,
+            args.message,
             args.tip_program_id,
             slot_receiver,
             block_receiver,
