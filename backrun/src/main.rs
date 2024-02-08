@@ -86,7 +86,7 @@ struct Args {
     #[clap(long, env)]
     rpc_url: String,
 
-    /// Message to pass into the memo program, to be included in the bundle.
+    /// Message to pass into the memo program as part of a bundle.
     #[clap(long, env, default_value_t = String::from("jito backrun"))]
     message: String,
 
