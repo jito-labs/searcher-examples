@@ -21,8 +21,8 @@ use jito_protos::{
     },
 };
 use jito_searcher_client::{
-    get_searcher_client, send_bundle_no_wait, token_authenticator::ClientInterceptor,
-    BlockEngineConnectionError,
+    get_searcher_client, send_bundle_no_wait,
+    token_authenticator::{BlockEngineConnectionError, ClientInterceptor},
 };
 use log::*;
 use rand::{rngs::ThreadRng, thread_rng, Rng};
@@ -512,7 +512,7 @@ async fn run_searcher_loop(
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
     let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
 
-    let mut searcher_client = get_searcher_client(&block_engine_url, &auth_keypair).await?;
+    let mut searcher_client = get_searcher_client(block_engine_url.clone(), &auth_keypair).await?;
 
     let mut rng = thread_rng();
 
@@ -609,6 +609,7 @@ fn main() -> Result<()> {
             auth_keypair.clone(),
             pending_tx_sender,
             args.backrun_accounts,
+            args.regions.clone(),
         ));
 
         if args.subscribe_bundle_results {

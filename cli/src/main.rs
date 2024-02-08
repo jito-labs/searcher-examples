@@ -135,7 +135,7 @@ async fn main() {
         .init();
 
     let keypair = Arc::new(read_keypair_file(&args.keypair_path).expect("reads keypair at path"));
-    let mut client = get_searcher_client(&args.block_engine_url, &keypair)
+    let mut client = get_searcher_client(args.block_engine_url.clone(), &keypair)
         .await
         .expect("connects to searcher client");
 

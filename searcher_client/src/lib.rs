@@ -1,5 +1,5 @@
 use std::{
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
 
@@ -25,24 +25,13 @@ use solana_sdk::{
 };
 use thiserror::Error;
 use tokio::time::timeout;
-use tonic::{
-    codegen::InterceptedService,
-    transport,
-    transport::{Channel, Endpoint},
-    Response, Status, Streaming,
+use tonic::{codegen::InterceptedService, transport::Channel, Response, Status, Streaming};
+
+use crate::token_authenticator::{
+    create_grpc_channel, BlockEngineConnectionResult, ClientInterceptor,
 };
 
-use crate::token_authenticator::ClientInterceptor;
-
 pub mod token_authenticator;
-
-#[derive(Debug, Error)]
-pub enum BlockEngineConnectionError {
-    #[error("transport error {0}")]
-    TransportError(#[from] transport::Error),
-    #[error("client error {0}")]
-    ClientError(#[from] Status),
-}
 
 #[derive(Debug, Error)]
 pub enum BundleRejectionError {
@@ -56,19 +45,19 @@ pub enum BundleRejectionError {
     InternalError(String),
 }
 
-pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;
-
 pub async fn get_searcher_client(
-    block_engine_url: &str,
+    block_engine_url: String,
     auth_keypair: &Arc<Keypair>,
 ) -> BlockEngineConnectionResult<
     SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
 > {
-    let auth_channel = create_grpc_channel(block_engine_url).await?;
-    let client_interceptor = ClientInterceptor::new(
+    let auth_channel = create_grpc_channel(block_engine_url.clone()).await?;
+    let (client_interceptor, _token_refresh_handle) = ClientInterceptor::new(
         AuthServiceClient::new(auth_channel),
-        auth_keypair,
+        auth_keypair.clone(),
         Role::Searcher,
+        "searcher-client".to_string(),
+        Arc::new(AtomicBool::default()),
     )
     .await?;
 
@@ -76,14 +65,6 @@ pub async fn get_searcher_client(
     let searcher_client =
         SearcherServiceClient::with_interceptor(searcher_channel, client_interceptor);
     Ok(searcher_client)
-}
-
-pub async fn create_grpc_channel(url: &str) -> BlockEngineConnectionResult<Channel> {
-    let mut endpoint = Endpoint::from_shared(url.to_string()).expect("invalid url");
-    if url.starts_with("https") {
-        endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new())?;
-    }
-    Ok(endpoint.connect().await?)
 }
 
 pub async fn send_bundle_with_confirmation(

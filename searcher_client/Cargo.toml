@@ -5,6 +5,7 @@ edition = "2021"
 description = "Wrapper around the generated gRPC. Adds auth and retry semantics."
 
 [dependencies]
+arc-swap = "1"
 futures-util = "0.3.28"
 jito-protos = { path = "../jito_protos" }
 log = "0.4"

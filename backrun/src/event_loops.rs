@@ -143,12 +143,13 @@ pub async fn block_subscribe_loop(
     }
 }
 
-// attempts to maintain connection to searcher service and stream pending transaction notifications over a channel
+/// attempts to maintain connection to searcher service and stream pending transaction notifications over a channel
 pub async fn pending_tx_loop(
     block_engine_url: String,
     auth_keypair: Arc<Keypair>,
     pending_tx_sender: Sender<PendingTxNotification>,
     backrun_pubkeys: Vec<Pubkey>,
+    regions: Vec<String>,
 ) {
     let mut num_searcher_connection_errors: usize = 0;
     let mut num_pending_tx_sub_errors: usize = 0;
@@ -160,11 +161,11 @@ pub async fn pending_tx_loop(
     loop {
         sleep(Duration::from_secs(1)).await;
 
-        match get_searcher_client(&block_engine_url, &auth_keypair).await {
+        match get_searcher_client(block_engine_url.clone(), &auth_keypair).await {
             Ok(mut searcher_client) => {
                 match searcher_client
                     .subscribe_mempool(MempoolSubscription {
-                        regions: vec![],
+                        regions: regions.clone(),
                         msg: Some(mempool_subscription::Msg::WlaV0Sub(
                             WriteLockedAccountSubscriptionV0 {
                                 accounts: backrun_pubkeys.iter().map(|pk| pk.to_string()).collect(),
@@ -235,7 +236,7 @@ pub async fn bundle_results_loop(
 
     loop {
         sleep(Duration::from_millis(1000)).await;
-        match get_searcher_client(&block_engine_url, &auth_keypair).await {
+        match get_searcher_client(block_engine_url.clone(), &auth_keypair).await {
             Ok(mut c) => match c
                 .subscribe_bundle_results(SubscribeBundleResultsRequest {})
                 .await
