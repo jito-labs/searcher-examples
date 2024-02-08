@@ -64,35 +64,35 @@ struct Args {
     block_engine_url: String,
 
     /// Account pubkeys to backrun
-    #[clap(long, env)]
+    #[arg(long, env)]
     backrun_accounts: Vec<Pubkey>,
 
     /// Path to keypair file used to sign and pay for transactions
-    #[clap(long, env)]
+    #[arg(long, env)]
     payer_keypair: PathBuf,
 
     /// Path to keypair file used to authenticate with the Jito Block Engine
     /// See: https://jito-labs.gitbook.io/mev/searcher-resources/getting-started#block-engine-api-key
-    #[clap(long, env)]
+    #[arg(long, env)]
     auth_keypair: PathBuf,
 
     /// RPC Websocket URL.
     /// See: https://solana.com/docs/rpc/websocket
     /// Note that this RPC server must have --rpc-pubsub-enable-block-subscription enabled
-    #[clap(long, env)]
+    #[arg(long, env)]
     pubsub_url: String,
 
     /// RPC HTTP URL.
-    #[clap(long, env)]
+    #[arg(long, env)]
     rpc_url: String,
 
-    /// Message to pass into the memo program, to be included in the bundle.
-    #[clap(long, env, default_value_t = String::from("jito backrun"))]
+    /// Message to pass into the memo program as part of a bundle.
+    #[arg(long, env, default_value = "jito backrun")]
     message: String,
 
-    /// Tip program public key
+    /// Tip payment program public key
     /// See: https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses
-    #[clap(long, env)]
+    #[arg(long, env)]
     tip_program_id: Pubkey,
 
     /// Comma-separated list of regions to request cross-region data from.
@@ -103,7 +103,7 @@ struct Args {
     regions: Vec<String>,
 
     /// Subscribe and print bundle results.
-    #[clap(long, env)]
+    #[arg(long, env, default_value_t = true)]
     subscribe_bundle_results: bool,
 }
 
