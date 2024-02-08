@@ -7,7 +7,7 @@ The following program exposes functionality in the Block Engine's searcher API.
 - Ensure the rust compiler is installed.
 - Ensure you have access to the block engine. Ask in discord or email support@jito.wtf for a token.
 - Sending a bundle requires an RPC server and a keypair with funds to pay for tip + transaction fees. If you need access to low latency RPC servers, email support@jito.wtf or create a ticket in our discord. 
-
+- For cross region functionality, add the `--regions REGION1,REGION2,etc` arg. [More details](https://jito-labs.gitbook.io/mev/searcher-services/recommendations#cross-region)
 ## Building
 ```bash
 git submodule update --init --recursive
@@ -17,9 +17,9 @@ cargo b --release --bin jito-searcher-cli
 ## Running
 
 ### Subscribe to mempool transactions
-Subscribe to transactions that write-lock the Pyth SOL/USDC account (H6AR...QJEG):
+Subscribe to transactions that write-lock the [Pyth SOL/USDC account](https://solscan.io/account/H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG):
 ```bash
-./target/release/jito-searcher-cli \
+cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   mempool-accounts --accounts H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG
@@ -31,9 +31,9 @@ tx sig: 2hMtL3ymMLxmzm8gjJkM1hB8524HS9hc79uksfEZNqshnutoZ249Hhe5eZtj8BrwgFKHRsXf
 ```
 
 ### Subscribe to transactions mentioning a program id
-Subscribe to mempool transaction that mentions SPL Staking program (Stake11..111)
+Subscribe to mempool transaction that mentions [SPL Staking program](https://solscan.io/account/Stake11111111111111111111111111111111111111)
 ```bash
-./target/release/jito-searcher-cli \
+cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   mempool-programs --programs Stake11111111111111111111111111111111111111
@@ -47,7 +47,7 @@ tx sig: Szk1fVLLkZwzQ5qbCY2nXQ3y8aiFPrGZvAeHMqNN12ArF8NxNF1H4autgd6BFgaVcw5BDL7j
 ### Get the next scheduled leader
 Returns the pubkey of the next scheduled leader.
 ```bash
-./target/release/jito-searcher-cli \
+cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   next-scheduled-leader
@@ -60,7 +60,7 @@ NextScheduledLeaderResponse { current_slot: 197084695, next_leader_slot: 1970847
 ### Get connected leaders
 Returns the [validators](https://jito-foundation.gitbook.io/mev/solana-mev/systems#jito-solana) connected to Block Engine as map of Pubkey to scheduled leader slots.
 ```bash
-./target/release/jito-searcher-cli \
+cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   connected-leaders
@@ -73,7 +73,7 @@ ConnectedLeadersResponse { connected_validators: {"CquA9q57TYVr9uvXvk6aqAG5GGKk3
 ### Get tip payment accounts
 Returns the current [tip payment accounts](https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses) that are in use. 
 ```bash
-./target/release/jito-searcher-cli \
+cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   tip-accounts
@@ -86,7 +86,7 @@ GetTipAccountsResponse { accounts: ["DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KR
 ### Send a bundle
 Sends a [bundle](https://jito-labs.gitbook.io/mev/searcher-resources/bundles) to Block Engine to be included in next leader slot.
 ```bash
-./target/release/jito-searcher-cli \
+cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   send-bundle \
