@@ -534,7 +534,7 @@ async fn run_searcher_loop(
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                maintenance_tick(&mut searcher_client, &rpc_client,  &mut leader_schedule, &mut blockhash, regions.clone()).await?;
+                maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash, regions.clone()).await?;
             }
             maybe_bundle_result = bundle_results_receiver.recv() => {
                 let bundle_result: BundleResult = maybe_bundle_result.ok_or(BackrunError::Shutdown)?;
@@ -633,7 +633,7 @@ fn main() -> Result<()> {
             pending_tx_receiver,
         )
         .await;
-        error!("searcher loop exited result: {:?}", result);
+        error!("searcher loop exited result: {result:?}");
 
         Ok(())
     })

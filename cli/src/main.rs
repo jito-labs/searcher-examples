@@ -148,9 +148,9 @@ async fn main() {
                 .await
                 .expect("gets next scheduled leader")
                 .into_inner();
-            info!("{next_leader:?}");
             info!(
-                "Next leader in {} slots in {}.",
+                "Next leader in {} slots in {}.\
+                {next_leader:?}",
                 next_leader.next_leader_slot - next_leader.current_slot,
                 next_leader.next_leader_region
             );
