@@ -2,7 +2,7 @@ mod event_loops;
 
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
-    path::Path,
+    path::PathBuf,
     result,
     str::FromStr,
     sync::Arc,
@@ -58,40 +58,52 @@ use crate::event_loops::{
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// Address for auth service
-    #[clap(long, env)]
-    block_engine_addr: String,
+    /// URL of the block engine.
+    /// See: https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
+    #[arg(long, env)]
+    block_engine_url: String,
 
-    /// Accounts to backrun
-    #[clap(long, env)]
-    backrun_accounts: Vec<String>,
+    /// Account pubkeys to backrun
+    #[arg(long, env)]
+    backrun_accounts: Vec<Pubkey>,
 
     /// Path to keypair file used to sign and pay for transactions
-    #[clap(long, env)]
-    payer_keypair: String,
+    #[arg(long, env)]
+    payer_keypair: PathBuf,
 
-    /// Path to keypair file used to authenticate with the backend
-    #[clap(long, env)]
-    auth_keypair: String,
+    /// Path to keypair file used to authenticate with the Jito Block Engine
+    /// See: https://jito-labs.gitbook.io/mev/searcher-resources/getting-started#block-engine-api-key
+    #[arg(long, env)]
+    auth_keypair: PathBuf,
 
-    /// Pubsub URL. Note that this RPC server must have --rpc-pubsub-enable-block-subscription enabled
-    #[clap(long, env)]
+    /// RPC Websocket URL.
+    /// See: https://solana.com/docs/rpc/websocket
+    /// Note that this RPC server must have --rpc-pubsub-enable-block-subscription enabled
+    #[arg(long, env)]
     pubsub_url: String,
 
-    /// RPC URL to get block hashes from
-    #[clap(long, env)]
+    /// RPC HTTP URL.
+    #[arg(long, env)]
     rpc_url: String,
 
-    /// Memo program message
-    #[clap(long, env, default_value_t = String::from("jito backrun"))]
+    /// Message to pass into the memo program as part of a bundle.
+    #[arg(long, env, default_value = "jito backrun")]
     message: String,
 
-    /// Tip program public key
-    #[clap(long, env)]
-    tip_program_id: String,
+    /// Tip payment program public key
+    /// See: https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses
+    #[arg(long, env)]
+    tip_program_id: Pubkey,
+
+    /// Comma-separated list of regions to request cross-region data from.
+    /// If no region specified, then default to the currently connected block engine's region.
+    /// Details: https://jito-labs.gitbook.io/mev/searcher-services/recommendations#cross-region
+    /// Available regions: https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
+    #[arg(long, env, value_delimiter = ',')]
+    regions: Vec<String>,
 
     /// Subscribe and print bundle results.
-    #[clap(long, env)]
+    #[arg(long, env, default_value_t = true)]
     subscribe_bundle_results: bool,
 }
 
@@ -169,7 +181,7 @@ async fn send_bundles(
     searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     bundles: &[BundledTransactions],
 ) -> Result<Vec<result::Result<Response<SendBundleResponse>, Status>>> {
-    let mut futs = vec![];
+    let mut futs = Vec::with_capacity(bundles.len());
     for b in bundles {
         let mut searcher_client = searcher_client.clone();
         let txs = b
@@ -183,7 +195,7 @@ async fn send_bundles(
         futs.push(task);
     }
 
-    let responses = futures::future::join_all(futs).await;
+    let responses = futures_util::future::join_all(futs).await;
     let send_bundle_responses = responses.into_iter().map(|r| r.unwrap()).collect();
     Ok(send_bundle_responses)
 }
@@ -208,6 +220,7 @@ async fn maintenance_tick(
     rpc_client: &RpcClient,
     leader_schedule: &mut HashMap<Pubkey, HashSet<Slot>>,
     blockhash: &mut Hash,
+    regions: Vec<String>,
 ) -> Result<()> {
     *blockhash = rpc_client
         .get_latest_blockhash_with_commitment(CommitmentConfig {
@@ -234,13 +247,14 @@ async fn maintenance_tick(
     }
 
     let next_scheduled_leader = searcher_client
-        .get_next_scheduled_leader(NextScheduledLeaderRequest {})
+        .get_next_scheduled_leader(NextScheduledLeaderRequest { regions })
         .await?
         .into_inner();
     info!(
-        "next_scheduled_leader: {} in {} slots",
+        "next_scheduled_leader: {} in {} slots from {}",
         next_scheduled_leader.next_leader_identity,
-        next_scheduled_leader.next_leader_slot - next_scheduled_leader.current_slot
+        next_scheduled_leader.next_leader_slot - next_scheduled_leader.current_slot,
+        next_scheduled_leader.next_leader_region
     );
 
     Ok(())
@@ -266,7 +280,7 @@ fn print_block_stats(
                 i64
             ),
             (
-                "sent_rt_pp_min",
+                "sent_rt_pp_max",
                 stats.send_rt_per_packet.maximum().unwrap_or_default(),
                 i64
             ),
@@ -482,10 +496,11 @@ fn print_block_stats(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_searcher_loop(
-    block_engine_addr: String,
+    block_engine_url: String,
     auth_keypair: Arc<Keypair>,
     keypair: &Keypair,
     rpc_url: String,
+    regions: Vec<String>,
     message: String,
     tip_program_pubkey: Pubkey,
     mut slot_receiver: Receiver<Slot>,
@@ -497,7 +512,7 @@ async fn run_searcher_loop(
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
     let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
 
-    let mut searcher_client = get_searcher_client(&block_engine_addr, &auth_keypair).await?;
+    let mut searcher_client = get_searcher_client(&block_engine_url, &auth_keypair).await?;
 
     let mut rng = thread_rng();
 
@@ -519,7 +534,7 @@ async fn run_searcher_loop(
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash).await?;
+                maintenance_tick(&mut searcher_client, &rpc_client, &mut leader_schedule, &mut blockhash, regions.clone()).await?;
             }
             maybe_bundle_result = bundle_results_receiver.recv() => {
                 let bundle_result: BundleResult = maybe_bundle_result.ok_or(BackrunError::Shutdown)?;
@@ -575,19 +590,10 @@ fn main() -> Result<()> {
         .init();
     let args: Args = Args::parse();
 
-    let payer_keypair =
-        Arc::new(read_keypair_file(Path::new(&args.payer_keypair)).expect("parse kp file"));
-    let auth_keypair =
-        Arc::new(read_keypair_file(Path::new(&args.auth_keypair)).expect("parse kp file"));
+    let payer_keypair = Arc::new(read_keypair_file(&args.payer_keypair).expect("parse kp file"));
+    let auth_keypair = Arc::new(read_keypair_file(&args.auth_keypair).expect("parse kp file"));
 
     set_host_id(auth_keypair.pubkey().to_string());
-
-    let backrun_pubkeys: Vec<Pubkey> = args
-        .backrun_accounts
-        .iter()
-        .map(|a| Pubkey::from_str(a).unwrap())
-        .collect();
-    let tip_program_pubkey = Pubkey::from_str(&args.tip_program_id).unwrap();
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
     runtime.block_on(async move {
@@ -599,34 +605,35 @@ fn main() -> Result<()> {
         tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
         tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
         tokio::spawn(pending_tx_loop(
-            args.block_engine_addr.clone(),
+            args.block_engine_url.clone(),
             auth_keypair.clone(),
             pending_tx_sender,
-            backrun_pubkeys,
+            args.backrun_accounts,
         ));
 
         if args.subscribe_bundle_results {
             tokio::spawn(bundle_results_loop(
-                args.block_engine_addr.clone(),
+                args.block_engine_url.clone(),
                 auth_keypair.clone(),
                 bundle_results_sender,
             ));
         }
 
         let result = run_searcher_loop(
-            args.block_engine_addr,
+            args.block_engine_url,
             auth_keypair,
             &payer_keypair,
             args.rpc_url,
+            args.regions,
             args.message,
-            tip_program_pubkey,
+            args.tip_program_id,
             slot_receiver,
             block_receiver,
             bundle_results_receiver,
             pending_tx_receiver,
         )
         .await;
-        error!("searcher loop exited result: {:?}", result);
+        error!("searcher loop exited result: {result:?}");
 
         Ok(())
     })

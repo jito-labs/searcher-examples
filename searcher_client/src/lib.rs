@@ -80,7 +80,7 @@ pub async fn get_searcher_client(
 
 pub async fn create_grpc_channel(url: &str) -> BlockEngineConnectionResult<Channel> {
     let mut endpoint = Endpoint::from_shared(url.to_string()).expect("invalid url");
-    if url.contains("https") {
+    if url.starts_with("https") {
         endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new())?;
     }
     Ok(endpoint.connect().await?)
@@ -161,7 +161,7 @@ pub async fn send_bundle_with_confirmation(
             rpc_client.get_signature_status_with_commitment(sig, CommitmentConfig::processed())
         })
         .collect();
-    let results = futures::future::join_all(futs).await;
+    let results = futures_util::future::join_all(futs).await;
     if !results.iter().all(|r| matches!(r, Ok(Some(Ok(()))))) {
         warn!("Transactions in bundle did not land");
         return Err(Box::new(BundleRejectionError::InternalError(

@@ -1,4 +1,4 @@
-use std::{env, str::FromStr, sync::Arc, time::Duration};
+use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
@@ -31,13 +31,22 @@ use tonic::{codegen::InterceptedService, transport::Channel, Streaming};
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    /// URL of the block engine
-    #[clap(long, env)]
+    /// URL of the block engine.
+    /// See: https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
+    #[arg(long, env)]
     block_engine_url: String,
 
-    /// Filepath to a keypair that's authenticated with the block engine
-    #[clap(long, env)]
-    keypair_path: String,
+    /// Path to keypair file used to authenticate with the Jito Block Engine
+    /// See: https://jito-labs.gitbook.io/mev/searcher-resources/getting-started#block-engine-api-key
+    #[arg(long, env)]
+    keypair_path: PathBuf,
+
+    /// Comma-separated list of regions to request cross-region data from.
+    /// If no region specified, then default to the currently connected block engine's region.
+    /// Details: https://jito-labs.gitbook.io/mev/searcher-services/recommendations#cross-region
+    /// Available regions: https://jito-labs.gitbook.io/mev/searcher-resources/block-engine#connection-details
+    #[arg(long, env, value_delimiter = ',')]
+    regions: Vec<String>,
 
     /// Subcommand to run
     #[command(subcommand)]
@@ -47,28 +56,35 @@ struct Args {
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Subscribe to mempool accounts
+    /// See: https://jito-labs.gitbook.io/mev/searcher-services/mempoolstream
     MempoolAccounts {
         /// A comma-separated list of accounts to subscribe to
         #[arg(long, value_delimiter = ',', required = true)]
         accounts: Vec<Pubkey>,
     },
+
     /// Subscribe to mempool by program IDs
     MempoolPrograms {
         /// A comma-separated list of programs to subscribe to
         #[arg(long, value_delimiter = ',', required = true)]
         programs: Vec<Pubkey>,
     },
+
     /// Print out information on the next scheduled leader
     NextScheduledLeader,
+
     /// Prints out information on connected leaders
     ConnectedLeaders,
+
     /// Prints out connected leaders with their leader slot percentage
     ConnectedLeadersInfo {
         #[clap(long, required = true)]
         rpc_url: String,
     },
-    /// Prints out information on the tip accounts
+
+    /// Prints out information about the tip accounts
     TipAccounts,
+
     /// Sends a 1 lamport bundle
     SendBundle {
         /// RPC URL
@@ -76,7 +92,7 @@ enum Commands {
         rpc_url: String,
         /// Filepath to keypair that can afford the transaction payments with 1 lamport tip
         #[clap(long, required = true)]
-        payer: String,
+        payer: PathBuf,
         /// Message you'd like the bundle to say
         #[clap(long, required = true)]
         message: String,
@@ -86,17 +102,18 @@ enum Commands {
         /// Amount of lamports to tip in each transaction
         #[clap(long, required = true)]
         lamports: u64,
-        /// One of the tip accounts
+        /// One of the tip accounts, see https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses
         #[clap(long, required = true)]
-        tip_account: String,
+        tip_account: Pubkey,
     },
 }
 
 async fn print_next_leader_info(
     client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+    regions: Vec<String>,
 ) {
     let next_leader = client
-        .get_next_scheduled_leader(NextScheduledLeaderRequest {})
+        .get_next_scheduled_leader(NextScheduledLeaderRequest { regions })
         .await
         .expect("gets next scheduled leader")
         .into_inner();
@@ -110,7 +127,6 @@ async fn print_next_leader_info(
 #[tokio::main]
 async fn main() {
     let args: Args = Args::parse();
-
     if env::var("RUST_LOG").is_err() {
         env::set_var("RUST_LOG", "info")
     }
@@ -118,8 +134,7 @@ async fn main() {
         .format_timestamp(Some(TimestampPrecision::Micros))
         .init();
 
-    let keypair = Arc::new(read_keypair_file(args.keypair_path).expect("reads keypair at path"));
-
+    let keypair = Arc::new(read_keypair_file(&args.keypair_path).expect("reads keypair at path"));
     let mut client = get_searcher_client(&args.block_engine_url, &keypair)
         .await
         .expect("connects to searcher client");
@@ -127,30 +142,34 @@ async fn main() {
     match args.command {
         Commands::NextScheduledLeader => {
             let next_leader = client
-                .get_next_scheduled_leader(NextScheduledLeaderRequest {})
+                .get_next_scheduled_leader(NextScheduledLeaderRequest {
+                    regions: args.regions,
+                })
                 .await
                 .expect("gets next scheduled leader")
                 .into_inner();
-            info!("{:?}", next_leader);
+            info!(
+                "Next leader in {} slots in {}.\
+                {next_leader:?}",
+                next_leader.next_leader_slot - next_leader.current_slot,
+                next_leader.next_leader_region
+            );
         }
         Commands::ConnectedLeaders => {
             let connected_leaders = client
                 .get_connected_leaders_regioned(ConnectedLeadersRegionedRequest {
-                    regions: vec![
-                        // "amsterdam".to_string(),
-                        // "frankfurt".to_string(),
-                        // "ny".to_string(),
-                        // "tokyo".to_string(),
-                    ], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
+                    regions: args.regions,
                 })
                 .await
                 .expect("gets connected leaders")
                 .into_inner();
-            info!("{:?}", connected_leaders);
+            info!("{connected_leaders:?}");
         }
         Commands::ConnectedLeadersInfo { rpc_url } => {
             let connected_leaders_response = client
-                .get_connected_leaders_regioned(ConnectedLeadersRegionedRequest { regions: vec![] })
+                .get_connected_leaders_regioned(ConnectedLeadersRegionedRequest {
+                    regions: args.regions,
+                })
                 .await
                 .expect("gets connected leaders")
                 .into_inner();
@@ -209,19 +228,14 @@ async fn main() {
                                 .collect::<Vec<String>>(),
                         },
                     )),
-                    regions: vec![
-                        // "amsterdam".to_string(),
-                        // "frankfurt".to_string(),
-                        // "ny".to_string(),
-                        // "tokyo".to_string(),
-                    ], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
+                    regions: args.regions.clone(),
                 })
                 .await
                 .expect("subscribes to pending transactions by write-locked accounts")
                 .into_inner();
 
-            print_next_leader_info(&mut client).await;
-            print_packet_stream(&mut client, pending_transactions).await;
+            print_next_leader_info(&mut client, args.regions.clone()).await;
+            print_packet_stream(&mut client, pending_transactions, args.regions).await;
         }
         Commands::MempoolPrograms { programs } => {
             info!("waiting for mempool transactions that mention programs: {programs:?}");
@@ -235,14 +249,14 @@ async fn main() {
                                 .collect::<Vec<String>>(),
                         },
                     )),
-                    regions: vec![], // by default, use currently connected region. see https://jito-labs.gitbook.io/mev/searcher-resources/block-engine/mainnet-addresses
+                    regions: args.regions.clone(),
                 })
                 .await
                 .expect("subscribes to pending transactions by program id")
                 .into_inner();
 
-            print_next_leader_info(&mut client).await;
-            print_packet_stream(&mut client, pending_transactions).await;
+            print_next_leader_info(&mut client, args.regions.clone()).await;
+            print_packet_stream(&mut client, pending_transactions, args.regions).await;
         }
         Commands::SendBundle {
             rpc_url,
@@ -252,8 +266,7 @@ async fn main() {
             lamports,
             tip_account,
         } => {
-            let payer_keypair = read_keypair_file(payer).expect("reads keypair at path");
-            let tip_account = Pubkey::from_str(&tip_account).expect("valid pubkey for tip account");
+            let payer_keypair = read_keypair_file(&payer).expect("reads keypair at path");
             let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
             let balance = rpc_client
                 .get_balance(&payer_keypair.pubkey())
@@ -261,9 +274,8 @@ async fn main() {
                 .expect("reads balance");
 
             info!(
-                "payer public key: {:?} lamports: {:?}",
+                "payer public key: {:?} lamports: {balance:?}",
                 payer_keypair.pubkey(),
-                balance
             );
 
             let mut bundle_results_subscription = client
@@ -276,13 +288,18 @@ async fn main() {
             let mut is_leader_slot = false;
             while !is_leader_slot {
                 let next_leader = client
-                    .get_next_scheduled_leader(NextScheduledLeaderRequest {})
+                    .get_next_scheduled_leader(NextScheduledLeaderRequest {
+                        regions: args.regions.clone(),
+                    })
                     .await
                     .expect("gets next scheduled leader")
                     .into_inner();
                 let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
                 is_leader_slot = num_slots <= 2;
-                info!("next jito leader slot in {num_slots} slots");
+                info!(
+                    "next jito leader slot in {num_slots} slots in {}",
+                    next_leader.next_leader_region
+                );
                 sleep(Duration::from_millis(500)).await;
             }
 
@@ -320,6 +337,7 @@ async fn main() {
 async fn print_packet_stream(
     client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     mut pending_transactions: Streaming<PendingTxNotification>,
+    regions: Vec<String>,
 ) {
     loop {
         match timeout(Duration::from_secs(5), pending_transactions.next()).await {
@@ -334,7 +352,7 @@ async fn print_packet_stream(
                 }
             }
             Ok(Some(Err(e))) => {
-                info!("error from pending transaction stream: {:?}", e);
+                info!("error from pending transaction stream: {e:?}");
                 break;
             }
             Ok(None) => {
@@ -342,7 +360,7 @@ async fn print_packet_stream(
                 break;
             }
             Err(_) => {
-                print_next_leader_info(client).await;
+                print_next_leader_info(client, regions.clone()).await;
             }
         }
     }
