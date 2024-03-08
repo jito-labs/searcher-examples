@@ -55,21 +55,6 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Subscribe to mempool accounts
-    /// See: https://jito-labs.gitbook.io/mev/searcher-services/mempoolstream
-    MempoolAccounts {
-        /// A comma-separated list of accounts to subscribe to
-        #[arg(long, value_delimiter = ',', required = true)]
-        accounts: Vec<Pubkey>,
-    },
-
-    /// Subscribe to mempool by program IDs
-    MempoolPrograms {
-        /// A comma-separated list of programs to subscribe to
-        #[arg(long, value_delimiter = ',', required = true)]
-        programs: Vec<Pubkey>,
-    },
-
     /// Print out information on the next scheduled leader
     NextScheduledLeader,
 
@@ -215,48 +200,6 @@ async fn main() {
                 .expect("gets connected leaders")
                 .into_inner();
             info!("{:?}", tip_accounts);
-        }
-        Commands::MempoolAccounts { accounts } => {
-            info!("waiting for mempool transactions that write-locks accounts: {accounts:?}");
-            let pending_transactions = client
-                .subscribe_mempool(MempoolSubscription {
-                    msg: Some(mempool_subscription::Msg::WlaV0Sub(
-                        WriteLockedAccountSubscriptionV0 {
-                            accounts: accounts
-                                .into_iter()
-                                .map(|a| a.to_string())
-                                .collect::<Vec<String>>(),
-                        },
-                    )),
-                    regions: args.regions.clone(),
-                })
-                .await
-                .expect("subscribes to pending transactions by write-locked accounts")
-                .into_inner();
-
-            print_next_leader_info(&mut client, args.regions.clone()).await;
-            print_packet_stream(&mut client, pending_transactions, args.regions).await;
-        }
-        Commands::MempoolPrograms { programs } => {
-            info!("waiting for mempool transactions that mention programs: {programs:?}");
-            let pending_transactions = client
-                .subscribe_mempool(MempoolSubscription {
-                    msg: Some(mempool_subscription::Msg::ProgramV0Sub(
-                        ProgramSubscriptionV0 {
-                            programs: programs
-                                .into_iter()
-                                .map(|p| p.to_string())
-                                .collect::<Vec<String>>(),
-                        },
-                    )),
-                    regions: args.regions.clone(),
-                })
-                .await
-                .expect("subscribes to pending transactions by program id")
-                .into_inner();
-
-            print_next_leader_info(&mut client, args.regions.clone()).await;
-            print_packet_stream(&mut client, pending_transactions, args.regions).await;
         }
         Commands::SendBundle {
             rpc_url,

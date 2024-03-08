@@ -1,14 +1,20 @@
 # Searcher CLI
 
 ## About
+
 The following program exposes functionality in the Block Engine's searcher API.
 
 ## Setup
+
 - Ensure the rust compiler is installed.
 - Ensure you have access to the block engine. Ask in discord or email support@jito.wtf for a token.
-- Sending a bundle requires an RPC server and a keypair with funds to pay for tip + transaction fees. If you need access to low latency RPC servers, email support@jito.wtf or create a ticket in our discord. 
-- For cross region functionality, add the `--regions REGION1,REGION2,etc` arg. [More details](https://jito-labs.gitbook.io/mev/searcher-services/recommendations#cross-region)
+- Sending a bundle requires an RPC server and a keypair with funds to pay for tip + transaction fees. If you need access
+  to low latency RPC servers, email support@jito.wtf or create a ticket in our discord.
+- For cross region functionality, add the `--regions REGION1,REGION2,etc`
+  arg. [More details](https://jito-labs.gitbook.io/mev/searcher-services/recommendations#cross-region)
+
 ## Building
+
 ```bash
 git submodule update --init --recursive
 cargo b --release --bin jito-searcher-cli
@@ -16,75 +22,65 @@ cargo b --release --bin jito-searcher-cli
 
 ## Running
 
-### Subscribe to mempool transactions
-Subscribe to transactions that write-lock the [Pyth SOL/USDC account](https://solscan.io/account/H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG):
-```bash
-cargo run --bin jito-searcher-cli -- \
-  --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
-  --keypair-path auth.json \
-  mempool-accounts --accounts H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG
-```
-Example output:
-```bash
-waiting for mempool transactions that write-locks accounts: ["H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG"]
-tx sig: 2hMtL3ymMLxmzm8gjJkM1hB8524HS9hc79uksfEZNqshnutoZ249Hhe5eZtj8BrwgFKHRsXfnSgE2AkkLM3bhHjg
-```
-
-### Subscribe to transactions mentioning a program id
-Subscribe to mempool transaction that mentions [SPL Staking program](https://solscan.io/account/Stake11111111111111111111111111111111111111)
-```bash
-cargo run --bin jito-searcher-cli -- \
-  --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
-  --keypair-path auth.json \
-  mempool-programs --programs Stake11111111111111111111111111111111111111
-```
-Example output:
-```bash
-waiting for mempool transactions that mention programs: [Stake11111111111111111111111111111111111111]
-tx sig: Szk1fVLLkZwzQ5qbCY2nXQ3y8aiFPrGZvAeHMqNN12ArF8NxNF1H4autgd6BFgaVcw5BDL7jGYcW9TYgHcKuifE
-```
-
 ### Get the next scheduled leader
+
 Returns the pubkey of the next scheduled leader.
+
 ```bash
 cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   next-scheduled-leader
 ```
+
 Example output:
+
 ```bash
 NextScheduledLeaderResponse { current_slot: 197084695, next_leader_slot: 197084788, next_leader_identity: "5pPRHniefFjkiaArbGX3Y8NUysJmQ9tMZg3FrFGwHzSm" }
 ```
 
 ### Get connected leaders
-Returns the [validators](https://jito-foundation.gitbook.io/mev/solana-mev/systems#jito-solana) connected to Block Engine as map of Pubkey to scheduled leader slots.
+
+Returns the [validators](https://jito-foundation.gitbook.io/mev/solana-mev/systems#jito-solana) connected to Block
+Engine as map of Pubkey to scheduled leader slots.
+
 ```bash
 cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   connected-leaders
 ```
+
 Example output:
+
 ```bash
 ConnectedLeadersResponse { connected_validators: {"CquA9q57TYVr9uvXvk6aqAG5GGKk3mUL9C8ALyAsUeWg": SlotList { slots: [196992512, 196992513, <snipped>] } } }
 ```
 
 ### Get tip payment accounts
-Returns the current [tip payment accounts](https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses) that are in use. 
+
+Returns the
+current [tip payment accounts](https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses)
+that are in use.
+
 ```bash
 cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   tip-accounts
 ```
+
 Example output:
+
 ```bash
 GetTipAccountsResponse { accounts: ["DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL", <snipped>] }
 ```
 
 ### Send a bundle
-Sends a [bundle](https://jito-labs.gitbook.io/mev/searcher-resources/bundles) to Block Engine to be included in next leader slot.
+
+Sends a [bundle](https://jito-labs.gitbook.io/mev/searcher-resources/bundles) to Block Engine to be included in next
+leader slot.
+
 ```bash
 cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
@@ -97,7 +93,9 @@ cargo run --bin jito-searcher-cli -- \
   --tip-account 96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5 \
   --rpc-url "https://mainnet.rpc.jito.wtf/?access-token=<token here>"
 ```
+
 Example output:
+
 ```bash
 Bundle sent. UUID: "f193340e2cd4a5994f8c845d6cdbdd49c508d3f3958a20462aa3f54fb9376e6b"
 Waiting for 5 seconds to hear results...
