@@ -8,11 +8,8 @@ The following program exposes functionality in the Block Engine's searcher API.
 
 - Ensure the rust compiler is installed.
 - Ensure you have access to the block engine. Ask in discord or email support@jito.wtf for a token.
-- Sending a bundle requires an RPC server and a keypair with funds to pay for tip + transaction fees. If you need access
-  to low latency RPC servers, email support@jito.wtf or create a ticket in our discord.
-- For cross region functionality, add the `--regions REGION1,REGION2,etc`
-  arg. [More details](https://jito-labs.gitbook.io/mev/searcher-services/recommendations#cross-region)
-
+- Sending a bundle requires an RPC server and a keypair with funds to pay for tip + transaction fees.
+- For cross region functionality, add the `--regions REGION1,REGION2,etc` arg. [More details](https://jito-labs.gitbook.io/mev/searcher-services/recommendations#cross-region)
 ## Building
 
 ```bash
