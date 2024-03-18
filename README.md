@@ -30,9 +30,6 @@ Please apply for block engine API keys here: https://web.miniextensions.com/WV3g
 ### On-chain addresses
 On-chain addresses for tip programs and tip accounts can be found here: https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses
 
-### RPC + Geyser
-If one needs access to low-latency, load-balanced RPC and Geyser, please reach out to support@jito.wtf or create a ticket in our discord asking for a Geyser/RPC API key.
-
 ## Folders
 
 ### backrun
