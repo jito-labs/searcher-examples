@@ -15,4 +15,4 @@ solana-sdk = "=1.17.20"
 solana-transaction-status = "=1.17.20"
 thiserror = "1.0.40"
 tokio = "1"
-tonic = "0.10"
+tonic = { version = "0.10", features = [ "tls", "tls-roots", "tls-webpki-roots"] }
