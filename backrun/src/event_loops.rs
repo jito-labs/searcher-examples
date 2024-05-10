@@ -1,14 +1,13 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use jito_protos::{
     bundle::BundleResult,
     searcher::{
-        mempool_subscription, MempoolSubscription, PendingTxNotification,
-        SubscribeBundleResultsRequest, WriteLockedAccountSubscriptionV0,
+        mempool_subscription, searcher_service_client::SearcherServiceClient, MempoolSubscription,
+        PendingTxNotification, SubscribeBundleResultsRequest, WriteLockedAccountSubscriptionV0,
     },
 };
-use jito_searcher_client::get_searcher_client;
 use log::info;
 use solana_client::{
     nonblocking::pubsub_client::PubsubClient,
@@ -21,11 +20,13 @@ use solana_sdk::{
     clock::Slot,
     commitment_config::{CommitmentConfig, CommitmentLevel},
     pubkey::Pubkey,
-    signature::Keypair,
 };
 use solana_transaction_status::{TransactionDetails, UiTransactionEncoding};
 use tokio::{sync::mpsc::Sender, time::sleep};
-use tonic::Streaming;
+use tonic::{
+    codegen::{Body, Bytes, StdError},
+    Streaming,
+};
 
 // slot update subscription loop that attempts to maintain a connection to an RPC server
 pub async fn slot_subscribe_loop(pubsub_addr: String, slot_sender: Sender<Slot>) {
@@ -144,13 +145,18 @@ pub async fn block_subscribe_loop(
 }
 
 // attempts to maintain connection to searcher service and stream pending transaction notifications over a channel
-pub async fn pending_tx_loop(
-    block_engine_url: String,
-    auth_keypair: Arc<Keypair>,
+pub async fn pending_tx_loop<T>(
+    mut searcher_client: SearcherServiceClient<T>,
     pending_tx_sender: Sender<PendingTxNotification>,
     backrun_pubkeys: Vec<Pubkey>,
-) {
-    let mut num_searcher_connection_errors: usize = 0;
+) where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
+    let _num_searcher_connection_errors: usize = 0;
     let mut num_pending_tx_sub_errors: usize = 0;
     let mut num_pending_tx_stream_errors: usize = 0;
     let mut num_pending_tx_stream_disconnects: usize = 0;
@@ -160,64 +166,49 @@ pub async fn pending_tx_loop(
     loop {
         sleep(Duration::from_secs(1)).await;
 
-        match get_searcher_client(&block_engine_url, &auth_keypair).await {
-            Ok(mut searcher_client) => {
-                match searcher_client
-                    .subscribe_mempool(MempoolSubscription {
-                        regions: vec![],
-                        msg: Some(mempool_subscription::Msg::WlaV0Sub(
-                            WriteLockedAccountSubscriptionV0 {
-                                accounts: backrun_pubkeys.iter().map(|pk| pk.to_string()).collect(),
-                            },
-                        )),
-                    })
-                    .await
-                {
-                    Ok(pending_tx_stream_response) => {
-                        let mut pending_tx_stream = pending_tx_stream_response.into_inner();
-                        while let Some(maybe_notification) = pending_tx_stream.next().await {
-                            match maybe_notification {
-                                Ok(notification) => {
-                                    if pending_tx_sender.send(notification).await.is_err() {
-                                        datapoint_error!(
-                                            "pending_tx_send_error",
-                                            ("errors", 1, i64)
-                                        );
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    num_pending_tx_stream_errors += 1;
-                                    datapoint_error!(
-                                        "searcher_pending_tx_stream_error",
-                                        ("errors", num_pending_tx_stream_errors, i64),
-                                        ("error_str", e.to_string(), String)
-                                    );
-                                    break;
-                                }
+        match searcher_client
+            .subscribe_mempool(MempoolSubscription {
+                regions: vec![],
+                msg: Some(mempool_subscription::Msg::WlaV0Sub(
+                    WriteLockedAccountSubscriptionV0 {
+                        accounts: backrun_pubkeys.iter().map(|pk| pk.to_string()).collect(),
+                    },
+                )),
+            })
+            .await
+        {
+            Ok(pending_tx_stream_response) => {
+                let mut pending_tx_stream = pending_tx_stream_response.into_inner();
+                while let Some(maybe_notification) = pending_tx_stream.next().await {
+                    match maybe_notification {
+                        Ok(notification) => {
+                            if pending_tx_sender.send(notification).await.is_err() {
+                                datapoint_error!("pending_tx_send_error", ("errors", 1, i64));
+                                return;
                             }
                         }
-                        num_pending_tx_stream_disconnects += 1;
-                        datapoint_error!(
-                            "searcher_pending_tx_stream_disconnect",
-                            ("errors", num_pending_tx_stream_disconnects, i64),
-                        );
-                    }
-                    Err(e) => {
-                        num_pending_tx_sub_errors += 1;
-                        datapoint_error!(
-                            "searcher_pending_tx_sub_error",
-                            ("errors", num_pending_tx_sub_errors, i64),
-                            ("error_str", e.to_string(), String)
-                        );
+                        Err(e) => {
+                            num_pending_tx_stream_errors += 1;
+                            datapoint_error!(
+                                "searcher_pending_tx_stream_error",
+                                ("errors", num_pending_tx_stream_errors, i64),
+                                ("error_str", e.to_string(), String)
+                            );
+                            break;
+                        }
                     }
                 }
+                num_pending_tx_stream_disconnects += 1;
+                datapoint_error!(
+                    "searcher_pending_tx_stream_disconnect",
+                    ("errors", num_pending_tx_stream_disconnects, i64),
+                );
             }
             Err(e) => {
-                num_searcher_connection_errors += 1;
+                num_pending_tx_sub_errors += 1;
                 datapoint_error!(
-                    "searcher_connection_error",
-                    ("errors", num_searcher_connection_errors, i64),
+                    "searcher_pending_tx_sub_error",
+                    ("errors", num_pending_tx_sub_errors, i64),
                     ("error_str", e.to_string(), String)
                 );
             }
@@ -225,38 +216,33 @@ pub async fn pending_tx_loop(
     }
 }
 
-pub async fn bundle_results_loop(
-    block_engine_url: String,
-    auth_keypair: Arc<Keypair>,
+pub async fn bundle_results_loop<T>(
+    mut searcher_client: SearcherServiceClient<T>,
     bundle_results_sender: Sender<BundleResult>,
-) {
-    let mut connection_errors: usize = 0;
+) where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
+    let _connection_errors: usize = 0;
     let mut response_errors: usize = 0;
 
     loop {
         sleep(Duration::from_millis(1000)).await;
-        match get_searcher_client(&block_engine_url, &auth_keypair).await {
-            Ok(mut c) => match c
-                .subscribe_bundle_results(SubscribeBundleResultsRequest {})
-                .await
-            {
-                Ok(resp) => {
-                    consume_bundle_results_stream(resp.into_inner(), &bundle_results_sender).await;
-                }
-                Err(e) => {
-                    response_errors += 1;
-                    datapoint_error!(
-                        "searcher_bundle_results_error",
-                        ("errors", response_errors, i64),
-                        ("msg", e.to_string(), String)
-                    );
-                }
-            },
+        match searcher_client
+            .subscribe_bundle_results(SubscribeBundleResultsRequest {})
+            .await
+        {
+            Ok(resp) => {
+                consume_bundle_results_stream(resp.into_inner(), &bundle_results_sender).await;
+            }
             Err(e) => {
-                connection_errors += 1;
+                response_errors += 1;
                 datapoint_error!(
                     "searcher_bundle_results_error",
-                    ("errors", connection_errors, i64),
+                    ("errors", response_errors, i64),
                     ("msg", e.to_string(), String)
                 );
             }

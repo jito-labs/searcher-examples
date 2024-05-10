@@ -6,14 +6,14 @@ use futures_util::StreamExt;
 use jito_protos::{
     convert::versioned_tx_from_packet,
     searcher::{
-        mempool_subscription, searcher_service_client::SearcherServiceClient,
-        ConnectedLeadersRegionedRequest, GetTipAccountsRequest, MempoolSubscription,
-        NextScheduledLeaderRequest, PendingTxNotification, ProgramSubscriptionV0,
-        SubscribeBundleResultsRequest, WriteLockedAccountSubscriptionV0,
+        searcher_service_client::SearcherServiceClient, ConnectedLeadersRegionedRequest,
+        GetTipAccountsRequest, NextScheduledLeaderRequest, PendingTxNotification,
+        SubscribeBundleResultsRequest,
     },
 };
 use jito_searcher_client::{
-    get_searcher_client, send_bundle_with_confirmation, token_authenticator::ClientInterceptor,
+    get_searcher_client_auth, get_searcher_client_no_auth, send_bundle_with_confirmation,
+    token_authenticator::ClientInterceptor,
 };
 use log::info;
 use solana_client::nonblocking::rpc_client::RpcClient;
@@ -26,7 +26,11 @@ use solana_sdk::{
 };
 use spl_memo::build_memo;
 use tokio::time::{sleep, timeout};
-use tonic::{codegen::InterceptedService, transport::Channel, Streaming};
+use tonic::{
+    codegen::{Body, Bytes, InterceptedService, StdError},
+    transport::Channel,
+    Streaming,
+};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -39,7 +43,7 @@ struct Args {
     /// Path to keypair file used to authenticate with the Jito Block Engine
     /// See: https://jito-labs.gitbook.io/mev/searcher-resources/getting-started#block-engine-api-key
     #[arg(long, env)]
-    keypair_path: PathBuf,
+    keypair_path: Option<PathBuf>,
 
     /// Comma-separated list of regions to request cross-region data from.
     /// If no region specified, then default to the currently connected block engine's region.
@@ -119,11 +123,40 @@ async fn main() {
         .format_timestamp(Some(TimestampPrecision::Micros))
         .init();
 
-    let keypair = Arc::new(read_keypair_file(&args.keypair_path).expect("reads keypair at path"));
-    let mut client = get_searcher_client(&args.block_engine_url, &keypair)
-        .await
-        .expect("connects to searcher client");
+    let keypair = args
+        .keypair_path
+        .as_ref()
+        .map(|path| Arc::new(read_keypair_file(path).expect("parse kp file")));
 
+    match keypair {
+        Some(auth_keypair) => {
+            let searcher_client_auth =
+                get_searcher_client_auth(
+                    args.block_engine_url.as_str(),
+                    &auth_keypair,
+                ).await
+                .expect("Failed to get searcher client with auth. Note: If you don't pass in the auth keypair, we can attempt to connect to the no auth endpoint");
+            process_commands(args, searcher_client_auth).await
+        }
+        None => {
+            let searcher_client_no_auth =
+                    get_searcher_client_no_auth(
+                        args.block_engine_url.as_str(),
+                    ).await
+                    .expect("Failed to get searcher client with auth. Note: If you don't pass in the auth keypair, we can attempt to connect to the no auth endpoint");
+            process_commands(args, searcher_client_no_auth).await
+        }
+    }
+}
+
+async fn process_commands<T>(args: Args, mut client: SearcherServiceClient<T>)
+where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
     match args.command {
         Commands::NextScheduledLeader => {
             let next_leader = client
@@ -277,7 +310,7 @@ async fn main() {
     }
 }
 
-async fn print_packet_stream(
+pub async fn print_packet_stream(
     client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
     mut pending_transactions: Streaming<PendingTxNotification>,
     regions: Vec<String>,

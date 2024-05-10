@@ -21,7 +21,7 @@ use jito_protos::{
     },
 };
 use jito_searcher_client::{
-    get_searcher_client, send_bundle_no_wait, token_authenticator::ClientInterceptor,
+    get_searcher_client_auth, get_searcher_client_no_auth, send_bundle_no_wait,
     BlockEngineConnectionError,
 };
 use log::*;
@@ -49,7 +49,10 @@ use tokio::{
     sync::mpsc::{channel, Receiver},
     time::interval,
 };
-use tonic::{codegen::InterceptedService, transport::Channel, Response, Status};
+use tonic::{
+    codegen::{Body, Bytes, StdError},
+    Response, Status,
+};
 
 use crate::event_loops::{
     block_subscribe_loop, bundle_results_loop, pending_tx_loop, slot_subscribe_loop,
@@ -74,7 +77,7 @@ struct Args {
     /// Path to keypair file used to authenticate with the Jito Block Engine
     /// See: https://jito-labs.gitbook.io/mev/searcher-resources/getting-started#block-engine-api-key
     #[arg(long, env)]
-    auth_keypair: PathBuf,
+    auth_keypair: Option<PathBuf>,
 
     /// RPC Websocket URL.
     /// See: https://solana.com/docs/rpc/websocket
@@ -177,10 +180,17 @@ fn build_bundles(
         .collect()
 }
 
-async fn send_bundles(
-    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+async fn send_bundles<T>(
+    searcher_client: &mut SearcherServiceClient<T>,
     bundles: &[BundledTransactions],
-) -> Result<Vec<result::Result<Response<SendBundleResponse>, Status>>> {
+) -> Result<Vec<result::Result<Response<SendBundleResponse>, Status>>>
+where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
     let mut futs = Vec::with_capacity(bundles.len());
     for b in bundles {
         let mut searcher_client = searcher_client.clone();
@@ -215,13 +225,20 @@ fn generate_tip_accounts(tip_program_pubkey: &Pubkey) -> Vec<Pubkey> {
     ]
 }
 
-async fn maintenance_tick(
-    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+async fn maintenance_tick<T>(
+    searcher_client: &mut SearcherServiceClient<T>,
     rpc_client: &RpcClient,
     leader_schedule: &mut HashMap<Pubkey, HashSet<Slot>>,
     blockhash: &mut Hash,
     regions: Vec<String>,
-) -> Result<()> {
+) -> Result<()>
+where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
     *blockhash = rpc_client
         .get_latest_blockhash_with_commitment(CommitmentConfig {
             commitment: CommitmentLevel::Confirmed,
@@ -495,9 +512,8 @@ fn print_block_stats(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_searcher_loop(
-    block_engine_url: String,
-    auth_keypair: Arc<Keypair>,
+async fn run_searcher_loop<T>(
+    mut searcher_client: SearcherServiceClient<T>,
     keypair: &Keypair,
     rpc_url: String,
     regions: Vec<String>,
@@ -507,12 +523,17 @@ async fn run_searcher_loop(
     mut block_receiver: Receiver<rpc_response::Response<RpcBlockUpdate>>,
     mut bundle_results_receiver: Receiver<BundleResult>,
     mut pending_tx_receiver: Receiver<PendingTxNotification>,
-) -> Result<()> {
+) -> Result<()>
+where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
     let mut leader_schedule: HashMap<Pubkey, HashSet<Slot>> = HashMap::new();
     let mut block_stats: HashMap<Slot, BlockStats> = HashMap::new();
     let mut block_signatures: HashMap<Slot, HashSet<Signature>> = HashMap::new();
-
-    let mut searcher_client = get_searcher_client(&block_engine_url, &auth_keypair).await?;
 
     let mut rng = thread_rng();
 
@@ -591,11 +612,55 @@ fn main() -> Result<()> {
     let args: Args = Args::parse();
 
     let payer_keypair = Arc::new(read_keypair_file(&args.payer_keypair).expect("parse kp file"));
-    let auth_keypair = Arc::new(read_keypair_file(&args.auth_keypair).expect("parse kp file"));
+    let auth_keypair = args
+        .auth_keypair
+        .as_ref()
+        .map(|path| Arc::new(read_keypair_file(path).expect("parse kp file")));
 
-    set_host_id(auth_keypair.pubkey().to_string());
+    set_host_id(
+        auth_keypair
+            .as_ref()
+            .map(|kp| kp.pubkey().to_string())
+            .unwrap_or(uuid::Uuid::new_v4().to_string()),
+    );
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+
+    match auth_keypair {
+        Some(auth_keypair) => {
+            let searcher_client_auth = runtime.block_on(
+            get_searcher_client_auth(
+                args.block_engine_url.as_str(),
+                &auth_keypair,
+            ))
+            .expect("Failed to get searcher client with auth. Note: If you don't pass in the auth keypair, we can attempt to connect to the no auth endpoint");
+            start_searcher_loop(runtime, searcher_client_auth, &payer_keypair, args)
+        }
+        None => {
+            let searcher_client_no_auth = runtime.block_on(
+                get_searcher_client_no_auth(
+                    args.block_engine_url.as_str(),
+                ))
+                .expect("Failed to get searcher client with auth. Note: If you don't pass in the auth keypair, we can attempt to connect to the no auth endpoint");
+            start_searcher_loop(runtime, searcher_client_no_auth, &payer_keypair, args)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_searcher_loop<T>(
+    runtime: tokio::runtime::Runtime,
+    searcher_client: SearcherServiceClient<T>,
+    payer_keypair: &Keypair,
+    args: Args,
+) -> Result<()>
+where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
     runtime.block_on(async move {
         let (slot_sender, slot_receiver) = channel(100);
         let (block_sender, block_receiver) = channel(100);
@@ -605,24 +670,21 @@ fn main() -> Result<()> {
         tokio::spawn(slot_subscribe_loop(args.pubsub_url.clone(), slot_sender));
         tokio::spawn(block_subscribe_loop(args.pubsub_url.clone(), block_sender));
         tokio::spawn(pending_tx_loop(
-            args.block_engine_url.clone(),
-            auth_keypair.clone(),
+            searcher_client.clone(),
             pending_tx_sender,
             args.backrun_accounts,
         ));
 
         if args.subscribe_bundle_results {
             tokio::spawn(bundle_results_loop(
-                args.block_engine_url.clone(),
-                auth_keypair.clone(),
+                searcher_client.clone(),
                 bundle_results_sender,
             ));
         }
 
         let result = run_searcher_loop(
-            args.block_engine_url,
-            auth_keypair,
-            &payer_keypair,
+            searcher_client,
+            payer_keypair,
             args.rpc_url,
             args.regions,
             args.message,

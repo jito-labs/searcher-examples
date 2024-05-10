@@ -21,3 +21,4 @@ spl-memo = "3.0.1"
 thiserror = "1.0.40"
 tokio = "1"
 tonic = { version = "0.10", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+uuid = { version = "1.8.0", features = ["v4"] }
