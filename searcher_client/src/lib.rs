@@ -26,7 +26,7 @@ use solana_sdk::{
 use thiserror::Error;
 use tokio::time::timeout;
 use tonic::{
-    codegen::InterceptedService,
+    codegen::{Body, Bytes, InterceptedService, StdError},
     transport,
     transport::{Channel, Endpoint},
     Response, Status, Streaming,
@@ -58,7 +58,7 @@ pub enum BundleRejectionError {
 
 pub type BlockEngineConnectionResult<T> = Result<T, BlockEngineConnectionError>;
 
-pub async fn get_searcher_client(
+pub async fn get_searcher_client_auth(
     block_engine_url: &str,
     auth_keypair: &Arc<Keypair>,
 ) -> BlockEngineConnectionResult<
@@ -78,6 +78,14 @@ pub async fn get_searcher_client(
     Ok(searcher_client)
 }
 
+pub async fn get_searcher_client_no_auth(
+    block_engine_url: &str,
+) -> BlockEngineConnectionResult<SearcherServiceClient<Channel>> {
+    let searcher_channel = create_grpc_channel(block_engine_url).await?;
+    let searcher_client = SearcherServiceClient::new(searcher_channel);
+    Ok(searcher_client)
+}
+
 pub async fn create_grpc_channel(url: &str) -> BlockEngineConnectionResult<Channel> {
     let mut endpoint = Endpoint::from_shared(url.to_string()).expect("invalid url");
     if url.starts_with("https") {
@@ -86,12 +94,19 @@ pub async fn create_grpc_channel(url: &str) -> BlockEngineConnectionResult<Chann
     Ok(endpoint.connect().await?)
 }
 
-pub async fn send_bundle_with_confirmation(
+pub async fn send_bundle_with_confirmation<T>(
     transactions: &[VersionedTransaction],
     rpc_client: &RpcClient,
-    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
+    searcher_client: &mut SearcherServiceClient<T>,
     bundle_results_subscription: &mut Streaming<BundleResult>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
     let bundle_signatures: Vec<Signature> =
         transactions.iter().map(|tx| tx.signatures[0]).collect();
 
@@ -175,10 +190,17 @@ pub async fn send_bundle_with_confirmation(
     Ok(())
 }
 
-pub async fn send_bundle_no_wait(
+pub async fn send_bundle_no_wait<T>(
     transactions: &[VersionedTransaction],
-    searcher_client: &mut SearcherServiceClient<InterceptedService<Channel, ClientInterceptor>>,
-) -> Result<Response<SendBundleResponse>, Status> {
+    searcher_client: &mut SearcherServiceClient<T>,
+) -> Result<Response<SendBundleResponse>, Status>
+where
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T::Error: Into<StdError>,
+    T::ResponseBody: Body<Data = Bytes> + Send + 'static,
+    <T::ResponseBody as Body>::Error: Into<StdError> + Send,
+    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+{
     // convert them to packets + send over
     let packets: Vec<_> = transactions
         .iter()

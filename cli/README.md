@@ -9,6 +9,7 @@ The following program exposes functionality in the Block Engine's searcher API.
 - Ensure the rust compiler is installed.
 - Sending a bundle requires an RPC server and a keypair with funds to pay for tip + transaction fees.
 - For cross region functionality, add the `--regions REGION1,REGION2,etc` arg. [More details](https://jito-labs.gitbook.io/mev/searcher-services/recommendations#cross-region)
+
 ## Building
 
 ```bash
@@ -45,6 +46,7 @@ cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   connected-leaders
+  # Note: Don't provide --keypair-path argument if not planning to use authentication
 ```
 
 Example output:
@@ -64,6 +66,7 @@ cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   tip-accounts
+  # Note: Don't provide --keypair-path argument if not planning to use authentication
 ```
 
 Example output:
@@ -88,6 +91,7 @@ cargo run --bin jito-searcher-cli -- \
   --lamports 100000 \
   --tip-account 96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5 \
   --rpc-url "https://mainnet.rpc.jito.wtf/?access-token=<token here>"
+  # Note: Don't provide --keypair-path argument if not planning to use authentication
 ```
 
 Example output:
