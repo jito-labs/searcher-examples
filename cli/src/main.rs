@@ -191,8 +191,8 @@ where
                 .await
                 .expect("gets connected leaders")
                 .into_inner();
-            let connected_validators = connected_leaders_response.connected_validators;
-
+            let region_to_connected_leaders_response =
+                connected_leaders_response.connected_validators;
             let rpc_client = RpcClient::new(rpc_url);
             let rpc_vote_account_status = rpc_client
                 .get_vote_accounts()
@@ -207,23 +207,38 @@ where
                 .sum();
 
             let mut total_activated_connected_stake = 0;
-            for rpc_vote_account_info in rpc_vote_account_status.current {
-                if connected_validators
-                    .get(&rpc_vote_account_info.node_pubkey)
-                    .is_some()
-                {
-                    total_activated_connected_stake += rpc_vote_account_info.activated_stake;
-                    info!(
-                        "connected_leader: {}, stake: {:.2}%",
-                        rpc_vote_account_info.node_pubkey,
-                        (rpc_vote_account_info.activated_stake * 100) as f64
-                            / total_activated_stake as f64
-                    );
+            let mut region_activated_connected_stakes = vec![];
+            for (region, connected_leaders_response) in region_to_connected_leaders_response {
+                info!("Connected validators for {region}");
+                let mut region_activated_connected_stake = 0;
+                for rpc_vote_account_info in rpc_vote_account_status.current.iter() {
+                    if connected_leaders_response
+                        .connected_validators
+                        .contains_key(&rpc_vote_account_info.node_pubkey)
+                    {
+                        info!(
+                            "connected_leader: {}, stake: {:.2}%",
+                            rpc_vote_account_info.node_pubkey,
+                            rpc_vote_account_info.activated_stake as f64 * 100.
+                                / total_activated_stake as f64
+                        );
+                        region_activated_connected_stake += rpc_vote_account_info.activated_stake;
+                    }
                 }
+
+                region_activated_connected_stakes.push((region, region_activated_connected_stake));
+                total_activated_connected_stake += region_activated_connected_stake;
+            }
+
+            for (region, region_activated_connected_stake) in region_activated_connected_stakes {
+                info!(
+                    "stake for {region}: {:.2}%",
+                    region_activated_connected_stake as f64 * 100. / total_activated_stake as f64
+                );
             }
             info!(
-                "total stake for block engine: {:.2}%",
-                (total_activated_connected_stake * 100) as f64 / total_activated_stake as f64
+                "total stake for selected block engines: {:.2}%",
+                total_activated_connected_stake as f64 * 100. / total_activated_stake as f64
             );
         }
         Commands::TipAccounts => {
