@@ -4,18 +4,6 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use jito_protos::{
-    auth::{auth_service_client::AuthServiceClient, Role},
-    bundle::{
-        bundle_result::Result as BundleResultType, rejected::Reason, Accepted, Bundle,
-        BundleResult, InternalError, SimulationFailure, StateAuctionBidRejected,
-        WinningBatchBidRejected,
-    },
-    convert::proto_packet_from_versioned_tx,
-    searcher::{
-        searcher_service_client::SearcherServiceClient, SendBundleRequest, SendBundleResponse,
-    },
-};
 use log::{info, warn};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
@@ -27,9 +15,22 @@ use thiserror::Error;
 use tokio::time::timeout;
 use tonic::{
     codegen::{Body, Bytes, InterceptedService, StdError},
-    transport,
-    transport::{Channel, Endpoint},
-    Response, Status, Streaming,
+    Response,
+    Status,
+    Streaming, transport, transport::{Channel, Endpoint},
+};
+
+use jito_protos::{
+    auth::{auth_service_client::AuthServiceClient, Role},
+    bundle::{
+        Accepted, Bundle, bundle_result::Result as BundleResultType, BundleResult,
+        InternalError, rejected::Reason, SimulationFailure, StateAuctionBidRejected,
+        WinningBatchBidRejected,
+    },
+    convert::proto_packet_from_versioned_tx,
+    searcher::{
+        searcher_service_client::SearcherServiceClient, SendBundleRequest, SendBundleResponse,
+    },
 };
 
 use crate::token_authenticator::ClientInterceptor;
@@ -116,8 +117,14 @@ where
     let uuid = result.into_inner().uuid;
     info!("Bundle sent. UUID: {:?}", uuid);
 
-    info!("Waiting for 5 seconds to hear results...");
-    let mut time_left = 5000;
+    // Read the environment variable
+    let wait_seconds = std::env::var("JITO_BUNDLE_RESULT_WAIT_SECONDS")
+        .unwrap_or_else(|_| "5".to_string())
+        .parse::<u64>()
+        .unwrap_or(5);
+
+    info!("Waiting for {wait_seconds} seconds to hear results...");
+    let mut time_left = wait_seconds * 1000;
     while let Ok(Some(Ok(results))) = timeout(
         Duration::from_millis(time_left),
         bundle_results_subscription.next(),
