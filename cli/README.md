@@ -28,6 +28,7 @@ cargo run --bin jito-searcher-cli -- \
   --block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
   --keypair-path auth.json \
   next-scheduled-leader
+  # Note: Don't provide --keypair-path argument if not planning to use authentication
 ```
 
 Example output:
