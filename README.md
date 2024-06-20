@@ -37,8 +37,6 @@ Our most complex example, this shows how to "backrun" transactions.
 
 Backrunning is when one inserts a transaction immediately behind a target transaction. Common forms of backrunning can be arbitrage and liquidations.
 
-This example listens to transactions from the mempool and submits bundles containing a backrun transaction immediately behind a target transaction.
-
 ### cli
 This is a rust program that exercises functionality inside the searcher API so you can explore the functionality. It provides an intuitive CLI-based interface for connecting to the block engine and sending test bundles.
 
