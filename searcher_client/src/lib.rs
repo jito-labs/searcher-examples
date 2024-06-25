@@ -184,8 +184,16 @@ where
         )));
     }
     info!("Bundle landed successfully");
+    let url: String = rpc_client.url();
+    let cluster = if url.contains("testnet") {
+        "testnet"
+    } else if url.contains("devnet") {
+        "devnet"
+    } else {
+        "mainnet"
+    };
     for sig in bundle_signatures.iter() {
-        info!("https://solscan.io/tx/{}", sig);
+        info!("https://solscan.io/tx/{}?cluster={}", sig, cluster);
     }
     Ok(())
 }
