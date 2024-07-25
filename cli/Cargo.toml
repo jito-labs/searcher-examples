@@ -24,3 +24,5 @@ spl-memo = "3.0.1"
 thiserror = "1.0.40"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tonic = { version = "0.10", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+spl-token = "3.5.0"
+spl-associated-token-account = "1.1.3"

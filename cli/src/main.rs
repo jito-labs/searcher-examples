@@ -1,3 +1,6 @@
+mod sol_bundle;
+mod bonk_bundle;
+
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{Parser, Subcommand};
@@ -31,6 +34,9 @@ use tonic::{
     transport::Channel,
     Streaming,
 };
+
+use sol_bundle::SolBundleCommand;
+use bonk_bundle::BonkBundleCommand;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -95,6 +101,13 @@ enum Commands {
         #[clap(long, required = true)]
         tip_account: Pubkey,
     },
+
+    #[command(flatten)]
+    SolBundle(SolBundleCommand),
+
+    #[command(flatten)]
+    BonkBundle(BonkBundleCommand),
+
 }
 
 async fn print_next_leader_info(
@@ -151,11 +164,11 @@ async fn main() {
 
 async fn process_commands<T>(args: Args, mut client: SearcherServiceClient<T>)
 where
-    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + 'static + Clone,
+    T: tonic::client::GrpcService<tonic::body::BoxBody> + Send + Sync + Clone + 'static,
     T::Error: Into<StdError>,
     T::ResponseBody: Body<Data = Bytes> + Send + 'static,
     <T::ResponseBody as Body>::Error: Into<StdError> + Send,
-    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::Future: std::marker::Send,
+    T::Future: Send + 'static,
 {
     match args.command {
         Commands::NextScheduledLeader => {
@@ -306,6 +319,12 @@ where
             )
             .await
             .expect("Sending bundle failed");
+        }
+        Commands::SolBundle(sol_bundle_command) => {
+            sol_bundle::handle_sol_bundle_command(&sol_bundle_command, &mut client, args.regions).await;
+        }
+        Commands::BonkBundle(bonk_bundle_command) => {
+            bonk_bundle::handle_bonk_bundle_command(&bonk_bundle_command, &mut client, args.regions).await;
         }
     }
 }

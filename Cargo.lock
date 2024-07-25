@@ -1996,7 +1996,9 @@ dependencies = [
  "solana-metrics",
  "solana-sdk",
  "solana-transaction-status",
+ "spl-associated-token-account 1.1.3",
  "spl-memo 3.0.1",
+ "spl-token 3.5.0",
  "thiserror",
  "tokio",
  "tonic",
@@ -2394,6 +2396,15 @@ dependencies = [
 
 [[package]]
 name = "num_enum"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f646caf906c20226733ed5b1374287eb97e3c2a5c227ce668c1f2ce20ae57c9"
+dependencies = [
+ "num_enum_derive 0.5.11",
+]
+
+[[package]]
+name = "num_enum"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a015b430d3c108a207fd776d2e2196aaf8b1cf8cf93253e3a097ff3085076a1"
@@ -2408,6 +2419,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02339744ee7253741199f897151b38e72257d13802d4ee837285cc2990a90845"
 dependencies = [
  "num_enum_derive 0.7.2",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dcbff9bc912032c62bf65ef1d5aea88983b420f4f839db1e9b0c281a25c9c799"
+dependencies = [
+ "proc-macro-crate 1.3.1",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3445,8 +3468,8 @@ dependencies = [
  "serde_json",
  "solana-config-program",
  "solana-sdk",
- "spl-token",
- "spl-token-2022",
+ "spl-token 4.0.0",
+ "spl-token-2022 1.0.0",
  "spl-token-group-interface",
  "spl-token-metadata-interface",
  "thiserror",
@@ -3875,7 +3898,7 @@ dependencies = [
  "solana-sdk",
  "solana-transaction-status",
  "solana-version",
- "spl-token-2022",
+ "spl-token-2022 1.0.0",
  "thiserror",
 ]
 
@@ -4054,10 +4077,10 @@ dependencies = [
  "serde_json",
  "solana-account-decoder",
  "solana-sdk",
- "spl-associated-token-account",
+ "spl-associated-token-account 2.3.0",
  "spl-memo 4.0.0",
- "spl-token",
- "spl-token-2022",
+ "spl-token 4.0.0",
+ "spl-token-2022 1.0.0",
  "thiserror",
 ]
 
@@ -4186,6 +4209,22 @@ dependencies = [
 
 [[package]]
 name = "spl-associated-token-account"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978dba3bcbe88d0c2c58366c254d9ea41c5f73357e72fc0bdee4d6b5fc99c8f4"
+dependencies = [
+ "assert_matches",
+ "borsh 0.9.3",
+ "num-derive 0.3.3",
+ "num-traits",
+ "solana-program",
+ "spl-token 3.5.0",
+ "spl-token-2022 0.6.1",
+ "thiserror",
+]
+
+[[package]]
+name = "spl-associated-token-account"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "992d9c64c2564cc8f63a4b508bf3ebcdf2254b0429b13cd1d31adb6162432a5f"
@@ -4195,8 +4234,8 @@ dependencies = [
  "num-derive 0.4.2",
  "num-traits",
  "solana-program",
- "spl-token",
- "spl-token-2022",
+ "spl-token 4.0.0",
+ "spl-token-2022 1.0.0",
  "thiserror",
 ]
 
@@ -4307,6 +4346,21 @@ dependencies = [
 
 [[package]]
 name = "spl-token"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e85e168a785e82564160dcb87b2a8e04cee9bfd1f4d488c729d53d6a4bd300d"
+dependencies = [
+ "arrayref",
+ "bytemuck",
+ "num-derive 0.3.3",
+ "num-traits",
+ "num_enum 0.5.11",
+ "solana-program",
+ "thiserror",
+]
+
+[[package]]
+name = "spl-token"
 version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08459ba1b8f7c1020b4582c4edf0f5c7511a5e099a7a97570c9698d4f2337060"
@@ -4317,6 +4371,24 @@ dependencies = [
  "num-traits",
  "num_enum 0.6.1",
  "solana-program",
+ "thiserror",
+]
+
+[[package]]
+name = "spl-token-2022"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0043b590232c400bad5ee9eb983ced003d15163c4c5d56b090ac6d9a57457b47"
+dependencies = [
+ "arrayref",
+ "bytemuck",
+ "num-derive 0.3.3",
+ "num-traits",
+ "num_enum 0.5.11",
+ "solana-program",
+ "solana-zk-token-sdk",
+ "spl-memo 3.0.1",
+ "spl-token 3.5.0",
  "thiserror",
 ]
 
@@ -4336,7 +4408,7 @@ dependencies = [
  "solana-zk-token-sdk",
  "spl-memo 4.0.0",
  "spl-pod",
- "spl-token",
+ "spl-token 4.0.0",
  "spl-token-group-interface",
  "spl-token-metadata-interface",
  "spl-transfer-hook-interface",
