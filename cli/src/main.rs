@@ -261,6 +261,7 @@ where
                 .into_inner();
 
             // wait for jito-solana leader slot
+            // note: this check is not needed unless jito-solana controls less than 50% of validators
             let mut is_leader_slot = false;
             while !is_leader_slot {
                 let next_leader = client
