@@ -21,6 +21,8 @@ cargo b --release --bin jito-searcher-cli
 
 ### Get the next scheduled leader
 
+(Note: This check is no longer needed since Jito-Sol is on roughly 80% of validators. If this were to drop below 50% this check might be more useful)
+
 Returns the pubkey of the next scheduled leader.
 
 ```bash
