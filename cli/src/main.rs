@@ -140,10 +140,9 @@ async fn main() {
         }
         None => {
             let searcher_client_no_auth =
-                    get_searcher_client_no_auth(
-                        args.block_engine_url.as_str(),
-                    ).await
-                    .expect("Failed to get searcher client with auth. Note: If you don't pass in the auth keypair, we can attempt to connect to the no auth endpoint");
+                get_searcher_client_no_auth(args.block_engine_url.as_str())
+                    .await
+                    .expect("Failed to get searcher client with no auth.");
             process_commands(args, searcher_client_no_auth).await
         }
     }
