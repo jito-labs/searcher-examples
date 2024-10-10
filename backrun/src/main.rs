@@ -637,11 +637,9 @@ fn main() -> Result<()> {
             start_searcher_loop(runtime, searcher_client_auth, &payer_keypair, args)
         }
         None => {
-            let searcher_client_no_auth = runtime.block_on(
-                get_searcher_client_no_auth(
-                    args.block_engine_url.as_str(),
-                ))
-                .expect("Failed to get searcher client with auth. Note: If you don't pass in the auth keypair, we can attempt to connect to the no auth endpoint");
+            let searcher_client_no_auth = runtime
+                .block_on(get_searcher_client_no_auth(args.block_engine_url.as_str()))
+                .expect("Failed to get searcher client with no auth.");
             start_searcher_loop(runtime, searcher_client_no_auth, &payer_keypair, args)
         }
     }
