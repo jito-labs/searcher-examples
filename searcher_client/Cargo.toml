@@ -9,10 +9,10 @@ futures-util = "0.3.28"
 jito-protos = { path = "../jito_protos" }
 log = "0.4"
 prost-types = "0.12"
-solana-client = "=1.17.20"
-solana-metrics = "=1.17.20"
-solana-sdk = "=1.17.20"
-solana-transaction-status = "=1.17.20"
+solana-client = "=2.1"
+solana-metrics = "=2.1"
+solana-sdk = "=2.1"
+solana-transaction-status = "=2.1"
 thiserror = "1.0.40"
 tokio = "1"
-tonic = { version = "0.10", features = [ "tls", "tls-roots", "tls-webpki-roots"] }
+tonic = { version = "0.10", features = ["tls", "tls-roots", "tls-webpki-roots"] }

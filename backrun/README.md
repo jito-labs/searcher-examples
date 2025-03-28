@@ -18,11 +18,12 @@ cargo run --bin jito-backrun-example -- \
 
 ## Example
 
-Backrun transactions that write-lock the [Pyth SOL/USDC account](https://solscan.io/account/H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG):
+Backrun transactions that write-lock
+the [Pyth SOL/USDC account](https://solscan.io/account/H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG):
 
 ```bash
 RUST_LOG=INFO cargo run --bin jito-backrun-example -- \
---block-engine-url https://frankfurt.mainnet.block-engine.jito.wtf \
+--block-engine-url https://mainnet.block-engine.jito.wtf \
 --payer-keypair keypair.json \
 --auth-keypair keypair.json \
 --pubsub-url ws://api.mainnet-beta.solana.com:8900 \
