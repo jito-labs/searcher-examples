@@ -34,6 +34,7 @@ pub fn packet_to_proto_packet(p: &Packet) -> Option<ProtoPacket> {
                 repair: p.meta().repair(),
                 simple_vote_tx: p.meta().is_simple_vote_tx(),
                 tracer_packet: p.meta().is_tracer_packet(),
+                from_staked_node: p.meta().is_from_staked_node(),
             }),
             sender_stake: 0,
         }),
