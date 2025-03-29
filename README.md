@@ -22,7 +22,7 @@ You will need access to a few things before running these examples.
 This is a locally generated wallet which you will use to sign transactions and pay for transaction fees and tips with.
 
 ### Block Engine URLs
-A list of our block engine URLs can be found here: https://jito-labs.gitbook.io/mev/systems/connecting/mainnet
+A list of our block engine URLs can be found here: https://docs.jito.wtf/lowlatencytxnsend/#api
 
 ### Block Engine API Key
 Please apply for block engine API keys here: https://web.miniextensions.com/WV3gZjFwqNqITsMufIEp
