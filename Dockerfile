@@ -48,10 +48,3 @@ ENV APP="jito-searcher-client"
 WORKDIR /app
 COPY --from=builder /home/root/app/${APP} ./
 ENTRYPOINT ["/app/jito-searcher-client"]
-
-
-FROM base_image as backrun
-ENV APP="jito-backrun-example"
-WORKDIR /app
-COPY --from=builder /home/root/app/${APP} ./
-ENTRYPOINT ["/app/jito-backrun-example"]
