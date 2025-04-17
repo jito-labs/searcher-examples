@@ -1,5 +1,5 @@
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
-
+use base64::Engine;
 use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
 use jito_protos::searcher::{
@@ -19,6 +19,7 @@ use solana_sdk::{
     system_instruction::transfer,
     transaction::{Transaction, VersionedTransaction},
 };
+use solana_transaction_status::Encodable;
 use spl_memo::build_memo;
 use tokio::time::sleep;
 use tonic::{
@@ -236,40 +237,21 @@ where
         } => {
             let payer_keypair = read_keypair_file(&payer).expect("reads keypair at path");
             let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
-            let balance = rpc_client
-                .get_balance(&payer_keypair.pubkey())
-                .await
-                .expect("reads balance");
-
-            info!(
-                "payer public key: {:?} lamports: {balance:?}",
-                payer_keypair.pubkey(),
-            );
+            // let balance = rpc_client
+            //     .get_balance(&payer_keypair.pubkey())
+            //     .await
+            //     .expect("reads balance");
+            //
+            // info!(
+            //     "payer public key: {:?} lamports: {balance:?}",
+            //     payer_keypair.pubkey(),
+            // );
 
             let mut bundle_results_subscription = client
                 .subscribe_bundle_results(SubscribeBundleResultsRequest {})
                 .await
                 .expect("subscribe to bundle results")
                 .into_inner();
-
-            // wait for jito-solana leader slot
-            let mut is_leader_slot = false;
-            while !is_leader_slot {
-                let next_leader = client
-                    .get_next_scheduled_leader(NextScheduledLeaderRequest {
-                        regions: args.regions.clone(),
-                    })
-                    .await
-                    .expect("gets next scheduled leader")
-                    .into_inner();
-                let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
-                is_leader_slot = num_slots <= 2;
-                info!(
-                    "next jito leader slot in {num_slots} slots in {}",
-                    next_leader.next_leader_region
-                );
-                sleep(Duration::from_millis(500)).await;
-            }
 
             // build + sign the transactions
             let blockhash = rpc_client
@@ -278,7 +260,7 @@ where
                 .expect("get blockhash");
             let txs: Vec<_> = (0..num_txs)
                 .map(|i| {
-                    VersionedTransaction::from(Transaction::new_signed_with_payer(
+                   let v= VersionedTransaction::from(Transaction::new_signed_with_payer(
                         &[
                             build_memo(format!("jito bundle {i}: {message}").as_bytes(), &[]),
                             transfer(&payer_keypair.pubkey(), &tip_account, lamports),
@@ -286,10 +268,39 @@ where
                         Some(&payer_keypair.pubkey()),
                         &[&payer_keypair],
                         blockhash,
-                    ))
+                    ));
+
+                    // 3. Serialize to raw bytes via the Encode trait
+                   let a =  v.encode(solana_transaction_status::UiTransactionEncoding::Base64);
+                   let res =  base64::prelude::BASE64_STANDARD.encode(bincode::serialize(&v.clone()).unwrap());
+                    // 4. Base64‑encode and print
+                    // let b64_tx = base64::encode(&serialized_bytes);
+                    println!("\"{}\",", res);
+                    v
                 })
                 .collect();
+println!("new\n\n\n");
+            let txs: Vec<_> = (0..num_txs)
+                .map(|i| {
+                    let v= VersionedTransaction::from(Transaction::new_signed_with_payer(
+                        &[
+                            build_memo(format!("jito bundle {i}: {message}").as_bytes(), &[]),
+                            transfer(&payer_keypair.pubkey(), &tip_account, lamports),
+                        ],
+                        Some(&payer_keypair.pubkey()),
+                        &[&payer_keypair],
+                        blockhash,
+                    ));
 
+                    // 3. Serialize to raw bytes via the Encode trait
+                    let a =  v.encode(solana_transaction_status::UiTransactionEncoding::Base64);
+                    let res =  solana_sdk::bs58::encode(bincode::serialize(&v).unwrap()).into_string();
+                    // 4. Base64‑encode and print
+                    // let b64_tx = base64::encode(&serialized_bytes);
+                    println!("\"{}\",", res);
+                    v
+                })
+                .collect();
             send_bundle_with_confirmation(
                 &txs,
                 &rpc_client,
