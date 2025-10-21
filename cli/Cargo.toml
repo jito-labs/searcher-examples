@@ -14,3 +14,5 @@ solana-sdk = "=2.1"
 spl-memo = "5"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tonic = { version = "0.10", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+histogram = "0.7"
+solana-metrics = "=2.1"

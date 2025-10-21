@@ -1,17 +1,24 @@
-use std::{env, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    env,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
+use histogram::Histogram;
 use jito_protos::searcher::{
     searcher_service_client::SearcherServiceClient, ConnectedLeadersRegionedRequest,
     GetTipAccountsRequest, NextScheduledLeaderRequest, SubscribeBundleResultsRequest,
 };
 use jito_searcher_client::{
-    get_searcher_client_auth, get_searcher_client_no_auth, send_bundle_with_confirmation,
+    get_searcher_client_auth, get_searcher_client_no_auth, send_bundle_no_wait,
     token_authenticator::ClientInterceptor,
 };
-use log::info;
+use log::{info, warn};
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_metrics::datapoint_info;
 use solana_sdk::{
     commitment_config::CommitmentConfig,
     pubkey::Pubkey,
@@ -20,7 +27,10 @@ use solana_sdk::{
     transaction::{Transaction, VersionedTransaction},
 };
 use spl_memo::build_memo;
-use tokio::time::sleep;
+use tokio::{
+    sync::{mpsc, watch, Semaphore},
+    time::MissedTickBehavior,
+};
 use tonic::{
     codegen::{Body, Bytes, InterceptedService, StdError},
     transport::Channel,
@@ -235,7 +245,10 @@ where
             tip_account,
         } => {
             let payer_keypair = read_keypair_file(&payer).expect("reads keypair at path");
-            let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
+            let rpc_client = Arc::new(RpcClient::new_with_commitment(
+                rpc_url,
+                CommitmentConfig::confirmed(),
+            ));
             let balance = rpc_client
                 .get_balance(&payer_keypair.pubkey())
                 .await
@@ -246,58 +259,230 @@ where
                 payer_keypair.pubkey(),
             );
 
-            let mut bundle_results_subscription = client
+            let bundle_results_subscription = client
                 .subscribe_bundle_results(SubscribeBundleResultsRequest {})
                 .await
                 .expect("subscribe to bundle results")
                 .into_inner();
 
-            // wait for jito-solana leader slot
-            let mut is_leader_slot = false;
-            while !is_leader_slot {
-                let next_leader = client
-                    .get_next_scheduled_leader(NextScheduledLeaderRequest {
-                        regions: args.regions.clone(),
-                    })
-                    .await
-                    .expect("gets next scheduled leader")
-                    .into_inner();
-                let num_slots = next_leader.next_leader_slot - next_leader.current_slot;
-                is_leader_slot = num_slots <= 2;
-                info!(
-                    "next jito leader slot in {num_slots} slots in {}",
-                    next_leader.next_leader_region
-                );
-                sleep(Duration::from_millis(500)).await;
+            tokio::spawn(async move {
+                let mut bundle_results_subscription = bundle_results_subscription;
+                loop {
+                    match bundle_results_subscription.message().await {
+                        Ok(Some(_)) => {}
+                        Ok(None) => break,
+                        Err(err) => {
+                            warn!("Bundle results stream error: {err}");
+                            break;
+                        }
+                    }
+                }
+            });
+
+            struct SendReport {
+                success: bool,
+                latency_us: Option<u64>,
             }
 
-            // build + sign the transactions
-            let blockhash = rpc_client
+            let (metrics_tx, metrics_rx) = mpsc::unbounded_channel::<SendReport>();
+
+            tokio::spawn(async move {
+                let mut metrics_rx = metrics_rx;
+                let build_latency_histogram = || {
+                    Histogram::builder()
+                        .maximum_value(60_000_000)
+                        .min_resolution(1)
+                        .build()
+                        .expect("latency histogram")
+                };
+                let mut window_histogram = build_latency_histogram();
+                let total_histogram = build_latency_histogram();
+
+                let mut window_start = Instant::now();
+                let mut window_bundles_sent: u64 = 0;
+                let mut total_bundles_sent: u64 = 0;
+                let mut window_failures: u64 = 0;
+                let mut total_failures: u64 = 0;
+
+                while let Some(report) = metrics_rx.recv().await {
+                    if report.success {
+                        total_bundles_sent += 1;
+                        window_bundles_sent += 1;
+                        if let Some(latency_us) = report.latency_us {
+                            let _ = window_histogram.increment(latency_us, 1);
+                            let _ = total_histogram.increment(latency_us, 1);
+                        }
+                    } else {
+                        total_failures += 1;
+                        window_failures += 1;
+                    }
+
+                    if window_start.elapsed() >= Duration::from_secs(1) {
+                        let window_duration = window_start.elapsed();
+                        let window_has_data = window_bundles_sent > 0;
+                        let total_has_data = total_bundles_sent > 0;
+
+                        let (window_p50, window_p95, window_p99) = if window_has_data {
+                            (
+                                window_histogram
+                                    .percentile(50.0)
+                                    .ok()
+                                    .map(|bucket| bucket.high() as i64)
+                                    .unwrap_or(-1),
+                                window_histogram
+                                    .percentile(95.0)
+                                    .ok()
+                                    .map(|bucket| bucket.high() as i64)
+                                    .unwrap_or(-1),
+                                window_histogram
+                                    .percentile(99.0)
+                                    .ok()
+                                    .map(|bucket| bucket.high() as i64)
+                                    .unwrap_or(-1),
+                            )
+                        } else {
+                            (-1, -1, -1)
+                        };
+
+                        let (total_p50, total_p95, total_p99) = if total_has_data {
+                            (
+                                total_histogram
+                                    .percentile(50.0)
+                                    .ok()
+                                    .map(|bucket| bucket.high() as i64)
+                                    .unwrap_or(-1),
+                                total_histogram
+                                    .percentile(95.0)
+                                    .ok()
+                                    .map(|bucket| bucket.high() as i64)
+                                    .unwrap_or(-1),
+                                total_histogram
+                                    .percentile(99.0)
+                                    .ok()
+                                    .map(|bucket| bucket.high() as i64)
+                                    .unwrap_or(-1),
+                            )
+                        } else {
+                            (-1, -1, -1)
+                        };
+
+                        if window_failures > 0 {
+                            warn!(
+                                "Failed to send {} bundles in the last window",
+                                window_failures
+                            );
+                        }
+
+                        datapoint_info!(
+                            "continuous_bundle_sender",
+                            ("window_bundles_sent", window_bundles_sent as i64, i64),
+                            (
+                                "window_duration_ms",
+                                window_duration.as_millis() as i64,
+                                i64
+                            ),
+                            ("window_latency_p50_us", window_p50, i64),
+                            ("window_latency_p95_us", window_p95, i64),
+                            ("window_latency_p99_us", window_p99, i64),
+                            ("window_has_data", window_has_data as i64, i64),
+                            ("total_bundles_sent", total_bundles_sent as i64, i64),
+                            ("total_latency_p50_us", total_p50, i64),
+                            ("total_latency_p95_us", total_p95, i64),
+                            ("total_latency_p99_us", total_p99, i64),
+                            ("total_has_data", total_has_data as i64, i64),
+                            ("window_failures", window_failures as i64, i64),
+                            ("total_failures", total_failures as i64, i64)
+                        );
+                        window_start = Instant::now();
+                        window_bundles_sent = 0;
+                        window_failures = 0;
+                        window_histogram = build_latency_histogram();
+                    }
+                }
+            });
+
+            info!("Starting continuous bundle sender");
+
+            let initial_blockhash = rpc_client
                 .get_latest_blockhash()
                 .await
                 .expect("get blockhash");
-            let txs: Vec<_> = (0..num_txs)
-                .map(|i| {
-                    VersionedTransaction::from(Transaction::new_signed_with_payer(
-                        &[
-                            build_memo(format!("jito bundle {i}: {message}").as_bytes(), &[]),
-                            transfer(&payer_keypair.pubkey(), &tip_account, lamports),
-                        ],
-                        Some(&payer_keypair.pubkey()),
-                        &[&payer_keypair],
-                        blockhash,
-                    ))
-                })
-                .collect();
+            let (blockhash_tx, blockhash_rx) = watch::channel(initial_blockhash);
+            let rpc_client_for_blockhash = Arc::clone(&rpc_client);
+            let _blockhash_updater = tokio::spawn(async move {
+                let mut update_interval = tokio::time::interval(Duration::from_secs(1));
+                update_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                loop {
+                    update_interval.tick().await;
+                    match rpc_client_for_blockhash.get_latest_blockhash().await {
+                        Ok(new_blockhash) => {
+                            if blockhash_tx.send(new_blockhash).is_err() {
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            warn!("Failed to refresh blockhash: {err}");
+                        }
+                    }
+                }
+            });
 
-            send_bundle_with_confirmation(
-                &txs,
-                &rpc_client,
-                &mut client,
-                &mut bundle_results_subscription,
-            )
-            .await
-            .expect("Sending bundle failed");
+            let mut bundle_counter: u64 = 0;
+            let send_semaphore = Arc::new(Semaphore::new(500));
+
+            loop {
+                let blockhash = *blockhash_rx.borrow();
+
+                let bundle_index = bundle_counter;
+                bundle_counter += 1;
+                let txs: Vec<_> = (0..num_txs)
+                    .map(|i| {
+                        VersionedTransaction::from(Transaction::new_signed_with_payer(
+                            &[
+                                build_memo(
+                                    format!("jito bundle {bundle_index} tx {i}: {message}")
+                                        .as_bytes(),
+                                    &[],
+                                ),
+                                transfer(&payer_keypair.pubkey(), &tip_account, lamports),
+                            ],
+                            Some(&payer_keypair.pubkey()),
+                            &[&payer_keypair],
+                            blockhash,
+                        ))
+                    })
+                    .collect();
+
+                let mut client_clone = client.clone();
+                let metrics_tx = metrics_tx.clone();
+                let permit = match send_semaphore.clone().acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!("Semaphore closed; stopping continuous sender loop");
+                        break;
+                    }
+                };
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let send_started = Instant::now();
+                    match send_bundle_no_wait(&txs, &mut client_clone).await {
+                        Ok(_) => {
+                            let latency_us = send_started.elapsed().as_micros() as u64;
+                            let _ = metrics_tx.send(SendReport {
+                                success: true,
+                                latency_us: Some(latency_us),
+                            });
+                        }
+                        Err(err) => {
+                            warn!("Failed to send bundle: {err}");
+                            let _ = metrics_tx.send(SendReport {
+                                success: false,
+                                latency_us: None,
+                            });
+                        }
+                    }
+                });
+            }
         }
     }
 }
