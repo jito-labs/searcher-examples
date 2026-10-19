@@ -25,7 +25,11 @@ This is a locally generated wallet which you will use to sign transactions and p
 A list of our block engine URLs can be found here: https://docs.jito.wtf/lowlatencytxnsend/#api
 
 ### Block Engine API Key
-Please apply for block engine API keys here: https://web.miniextensions.com/WV3gZjFwqNqITsMufIEp
+Please join our Discord server: https://discord.gg/jito
+
+Then open a ticket: https://discord.com/channels/938287290806042626/1336799632898134037
+
+Follow the prompts for a new JSON-RPC or gRPC user.
 
 ### On-chain addresses
 On-chain addresses for tip programs and tip accounts can be found here: https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses
