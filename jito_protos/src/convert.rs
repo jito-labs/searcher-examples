@@ -104,7 +104,7 @@ pub fn versioned_tx_from_packet(p: &ProtoPacket) -> Option<VersionedTransaction>
     packet.deserialize_slice(..).ok()
 }
 
-/// Coverts a VersionedTransaction to packet
+/// Converts a VersionedTransaction to packet
 pub fn packet_from_versioned_tx(tx: VersionedTransaction) -> Packet {
     let tx_data = serialize(&tx).expect("serializes");
     let mut data = [0; PACKET_DATA_SIZE];
