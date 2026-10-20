@@ -268,7 +268,10 @@ where
                     "next jito leader slot in {num_slots} slots in {}",
                     next_leader.next_leader_region
                 );
-                sleep(Duration::from_millis(500)).await;
+                // if we're not within 2 slots of the leader, sleep for 500ms
+                if !is_leader_slot {
+                    sleep(Duration::from_millis(500)).await;
+                }
             }
 
             // build + sign the transactions
