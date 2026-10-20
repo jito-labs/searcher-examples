@@ -2,3 +2,5 @@
 id.json
 .idea
 target/
+test.sh
+*/Cargo.lock

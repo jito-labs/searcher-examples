@@ -9,8 +9,20 @@ env_logger = "0.10"
 jito-protos = { path = "../jito_protos" }
 log = "0.4.17"
 jito-searcher-client = { path = "../searcher_client" }
-solana-client = "=2.1"
-solana-sdk = "=2.1"
+
+solana-keypair = "2.2.1"
+solana-pubkey = "2.2.1"
+solana-transaction = "2.2.2"
+solana-signer = "2.2.1"
+solana-instruction = "2.2.1"
+solana-program = "2.2.1"
+solana-client = "2.2.7"
+
 spl-memo = "5"
 tokio = { version = "1", features = ["rt-multi-thread"] }
-tonic = { version = "0.10", features = ["tls", "tls-roots", "tls-webpki-roots"] }
+tonic = { version = "0.12", features = ["tls", "tls-native-roots"] }
+
+# Stable prod versions
+prost = "0.13.5"
+prost-types = "0.13.5"
+solana-system-interface = { version = "3.0.0", features = ["bincode"] }
